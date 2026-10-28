@@ -1,0 +1,1 @@
+END_OF_DAY_CHARGE = 2 #0.5 * d.battery_capacity_kWh  # Example: 50% reserve
