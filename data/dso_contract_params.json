@@ -2,7 +2,7 @@
   "contract_id": "CL_base",
   "description": "Capacity limitation contract between the DSO and the community (after Crowley, Kazempour and Mitridati, 2025). The community trades energy at the day-ahead price through the community's single meter. The energy exchanged between members inside the community pays no grid tariff. On the metered exchange the community pays the grid tariffs of bus_params.json reduced by the discount ratio beta: (1 - beta) x import tariff on the import and (1 - beta) x export tariff on the export. The DSO caps the hourly import at capacity_limit_kW and charges penalty_DKK_per_kWh on every kWh imported above the cap in an hour (a soft cap). Individual contracts (benchmark model I): the same terms applied to one member's own metered import and export, with the hourly cap split between the members (individual_contracts).",
   "connection_point_bus": "Bus1",
-  "tariff_discount_ratio": 0.75,
+  "tariff_discount_ratio": 4.0,
   "penalty_DKK_per_kWh": 10.0,
   "capacity_limit_kW": [
     9.39,

@@ -3,7 +3,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
 
-
 def get_values(variables):
     "helper function to fetch values"
     return {key: variable.X for key, variable in variables.items()}
@@ -160,6 +159,66 @@ def print_summary_table(results, save_dir):
     summary = pd.DataFrame(rows).set_index("Model")
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
-    summary.to_csv(save_dir / "model_comparison.csv", index=True)
+
+    summary.to_csv(save_dir / f"model_comparison.csv", index=True)
 
     return summary
+
+def plot_Q1_sensitivity_manual(save_dir):
+    "plots the results for the sensitivity, which are manually inputtet per the results generated"
+
+    #plot parameters
+    plt.rcParams.update({
+    'font.size': 14,          # General text
+    'axes.titlesize': 17,     # Plot title
+    'axes.labelsize': 16,     # Axis labels
+    'xtick.labelsize': 13,    # X-axis tick labels
+    'ytick.labelsize': 13,    # Y-axis tick labels
+    'legend.fontsize': 13     # Legend
+    })
+
+    # Beta values
+    beta_values = [0.7, 0.75, 0.8, 0.9, 1.0]
+
+    # 1. PROFIT / OBJECTIVE VALUES (DKK)
+    # 1. PROFIT / OBJECTIVE VALUES (DKK)
+    profit_R = [412.772, 412.772, 412.772, 412.772, 412.772]
+    profit_I = [502.148, 497.639, 493.118, 483.998, 474.806]
+    profit_C = [391.740, 386.797, 381.785, 371.429, 361.038]
+
+    plt.figure(figsize=(8, 5))
+
+    plt.plot(beta_values, profit_R, marker='v', label='Base (R)')
+    plt.plot(beta_values, profit_I, marker='o', label='Individual contract (I)')
+    plt.plot(beta_values, profit_C, marker='s', label='Community contract (C)')
+
+    plt.xlabel(r'$\beta^{DSO}$')
+    plt.ylabel('Profit / Objective (DKK)')
+    plt.title('Profit as a Function of DSO Discount')
+    plt.xticks(beta_values)
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+    plt.savefig(save_dir / "ProfitQ1.png", dpi=300, bbox_inches="tight")
+
+    # 2. Load deviation (kWh)
+    load_dev_R = [14.780, 14.780, 14.780, 14.780, 14.780]
+    load_dev_I = [17.199, 17.199, 17.199, 17.808, 19.050]
+    load_dev_C = [11.260, 11.260, 14.213, 14.213, 14.213]
+
+    plt.figure(figsize=(8, 5))
+
+    plt.plot(beta_values, load_dev_R, marker='v', label='Base (R)')
+    plt.plot(beta_values, load_dev_I, marker='o', label='Individual contract (I)')
+    plt.plot(beta_values, load_dev_C, marker='s', label='Community contract (C)')
+
+    plt.xlabel(r'$\beta^{DSO}$')
+    plt.ylabel('Load Deviation (kWh)')
+    plt.title('Load Deviation as a Function of DSO Discount')
+    plt.xticks(beta_values)
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(save_dir / "LoadDevSQ1.png", dpi=300, bbox_inches="tight")
