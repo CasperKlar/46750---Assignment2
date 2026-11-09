@@ -361,3 +361,128 @@ class ModelC:
                     "objective": self.m.ObjVal,
                     **validation,
                 }
+
+
+class ModelDP:
+        
+    """Assignment 2, Model DP: manager-decided community-level imports, exports, and DSO cap."""
+
+    # What actually differs between models C and DP?
+        # One of the constraints, this being the individual consumer's objective function, now has x_t
+        # This is indirectly included in P_t^imp and P_t^exp
+
+
+    def __init__(self, community: CommunityData, verbose: bool = False, budget_balance = False, individual_rationality = False, reference_model = "C"):
+        self.community = community
+        self.verbose = verbose
+        self.I = range(len(community.members))
+        self.T = range(len(community.energy_price))
+        self.m = gp.Model("model_dp")
+        self.m.Params.OutputFlag = int(verbose)
+        self.var = {}
+        self.con = {}
+
+    def build(self) -> "ModelDP":
+        m, c, I, T = self.m, self.community, self.I, self.T
+        n_hours = len(T)
+
+        # Consumer and Hourly variables
+        self.var["l"] = m.addVars(I, T, lb=0, vtype=GRB.CONTINUOUS, name="l")
+        self.var["g"] = m.addVars(I, T, lb=0, vtype=GRB.CONTINUOUS, name="g")
+        self.var["d_+"] = m.addVars(I, T, lb=0, vtype=GRB.CONTINUOUS, name="d_pos")
+        self.var["d_-"] = m.addVars(I, T, lb=0, vtype=GRB.CONTINUOUS, name="d_neg")
+        self.var["s_ch"] = m.addVars(I, T, lb=0, vtype=GRB.CONTINUOUS, name="s_ch")
+        self.var["s_dis"] = m.addVars(I, T, lb=0, vtype=GRB.CONTINUOUS, name="s_dis")
+        self.var["E_bat"] = m.addVars(I, range(n_hours + 1), lb=0, vtype=GRB.CONTINUOUS, name="E_bat")
+
+        # q[i,t] is each member's net consumption. It can be negative when a member's net energy flow is an export.
+        self.var["q"] = m.addVars(I, T, lb=-GRB.INFINITY, vtype=GRB.CONTINUOUS, name="q")
+
+        # Imports and exports are measured at the community's single connection point. 
+        self.var["P_imp"] = m.addVars(T, lb=0, vtype=GRB.CONTINUOUS, name="P_imp")
+        self.var["P_exp"] = m.addVars(T, lb=0, vtype=GRB.CONTINUOUS, name="P_exp")
+
+        # One excess-import variable per hour for the entire community.
+        self.var["P_exc"] = m.addVars(T, lb=0, vtype=GRB.CONTINUOUS, name="P_exc")
+
+        l, g, q = self.var["l"], self.var["g"], self.var["q"]
+        P_imp, P_exp, P_exc = self.var["P_imp"], self.var["P_exp"], self.var["P_exc"]
+        d_pos, d_neg = self.var["d_+"], self.var["d_-"]
+        s_ch, s_dis, E_bat = self.var["s_ch"], self.var["s_dis"], self.var["E_bat"]
+
+        # DSO-adjusted prices same as Model C.
+        beta = c.contract.tariff_discount_ratio
+        p_imp = {t: c.energy_price[t] + (1 - beta) * c.import_tariff for t in T}
+        p_exp = {t: c.energy_price[t] - (1 - beta) * c.export_tariff for t in T}
+        alpha = c.contract.penalty_DKK_per_kWh
+
+        # Adding x_t
+        self.var["x"] = m.addVars(T, lb=-GRB.INFINITY, vtype=GRB.CONTINUOUS, name="x")
+        x = self.var["x"]
+
+        # The community pays for aggregate imports and receives revenue for aggregate exports. Unlike Model I, there is only one congestion penalty per hour, based on total community imports.
+        community_cost = gp.quicksum((p_imp[t] * P_imp[t] - p_exp[t] * P_exp[t] + alpha * P_exc[t]) for t in T)
+        
+        # Individual load deviation and PV production costs are still paid for each member.
+        """TODO: Add x_t in the formulation here /// APPARENTLY NOT"""
+        member_cost = gp.quicksum((c.members[i].linear_disutility if c.members[i].linear_disutility is not None else 0.0) * (d_pos[i, t] + d_neg[i, t]) + c.members[i].pv_marginal_cost * g[i, t] for i in I for t in T)
+        m.setObjective(community_cost + member_cost, GRB.MINIMIZE)
+
+        # NEW MODEL C CONSTRAINT: the community's excess import is measured against the shared hourly DSO cap.
+        # This differs from Model I, where each member has their own allocated cap.
+        self.con["dso_excess"] = m.addConstrs((P_exc[t] >= P_imp[t] - c.contract.capacity_limit_kW[t] for t in T), name="dso_excess")
+
+        # Individual load deviations and flexible-load bounds remain member-specific, just as in Model I.
+        self.con["deviation"] = m.addConstrs((l[i, t] - c.members[i].reference_load[t] == d_pos[i, t] - d_neg[i, t] for i in I for t in T), name="deviation")
+        self.con["load_lower"] = m.addConstrs((l[i, t] >= c.members[i].load_lower_kWh[t] for i in I for t in T), name="load_lower")
+        self.con["load_upper"] = m.addConstrs((l[i, t] <= c.members[i].load_upper_kWh[t] for i in I for t in T), name="load_upper")
+        self.con["energy_min"] = m.addConstrs((gp.quicksum(l[i, t] for t in T) >= c.members[i].min_daily_energy_kWh for i in I), name="energy_min")
+        self.con["pv_limit"] = m.addConstrs((g[i, t] <= c.members[i].pv_available[t] for i in I for t in T), name="pv_limit")
+
+        # Member-level energy balance uses net consumption q[i,t], rather than separate member imports and exports.
+        self.con["load_balance"] = m.addConstrs((l[i, t] == g[i, t] + q[i, t] - s_ch[i, t] + s_dis[i, t] for i in I for t in T), name="load_balance")
+
+        # NEW MODEL C CONSTRAINT: aggregate member net consumption equals community imports minus community exports.
+        # This equation links all members to the single meter at the community connection point.
+        self.con["community_balance"] = m.addConstrs((gp.quicksum(q[i, t] for i in I) == P_imp[t] - P_exp[t] for t in T), name="community_balance")
+
+        # Battery member constraints (NOTHING NEW)
+        battery_members = [i for i in I if c.members[i].has_battery]
+        nonbattery_members = [i for i in I if not c.members[i].has_battery]
+        self.con["no_battery_charge"] = m.addConstrs((s_ch[i, t] == 0 for i in nonbattery_members for t in T), name="no_battery_charge")
+        self.con["no_battery_discharge"] = m.addConstrs((s_dis[i, t] == 0 for i in nonbattery_members for t in T), name="no_battery_discharge")
+        self.con["no_battery_soc"] = m.addConstrs((E_bat[i, t] == 0 for i in nonbattery_members for t in range(n_hours + 1)), name="no_battery_soc")
+
+        # Battery constraints (NOTHING NEW)
+        self.con["soc_initial"] = m.addConstrs((E_bat[i, 0] == c.members[i].battery_initial_soc_kWh for i in battery_members), name="soc_initial")
+        self.con["soc_dynamic"] = m.addConstrs((E_bat[i, t + 1] == E_bat[i, t] + c.members[i].battery_charging_efficiency * s_ch[i, t] - s_dis[i, t] / c.members[i].battery_discharging_efficiency for i in battery_members for t in T), name="soc_dynamic")
+        self.con["soc_max"] = m.addConstrs((E_bat[i, t] <= c.members[i].battery_capacity_kWh for i in battery_members for t in range(n_hours + 1)), name="soc_max")
+        self.con["charge_limit"] = m.addConstrs((s_ch[i, t] <= c.members[i].battery_max_charge_kW for i in battery_members for t in T), name="charge_limit")
+        self.con["discharge_limit"] = m.addConstrs((s_dis[i, t] <= c.members[i].battery_max_discharge_kW for i in battery_members for t in T), name="discharge_limit")
+        self.con["soc_final"] = m.addConstrs((E_bat[i, n_hours] >= (c.members[i].battery_final_soc_kWh if c.members[i].battery_final_soc_kWh is not None else END_OF_DAY_CHARGE) for i in battery_members), name="soc_final")
+
+        return self
+
+    def solve(self):
+        """Optimize Model C and validate the solution."""
+        self.m.optimize()
+        if self.m.Status != GRB.OPTIMAL:
+            raise RuntimeError(f"Model C did not reach optimality. Status: {self.m.Status}")
+
+        validation = validate_solution(self.m)
+        print("\n--- Model C validation ---")
+        for key, value in validation.items():
+            if key == "validation_messages":
+                for message in value:
+                    print(f"- {message}")
+            else:
+                print(f"{key}: {value}")
+
+        return {
+                    "model_name": "Model C",
+                    "status": self.m.Status,
+                    "objective": self.m.ObjVal,
+                    **validation,
+                }
+
+
