@@ -1,0 +1,53 @@
+=== Q1 settlement summary (model C vs R and I) ===
+Community objective [DKK]:  R = 412.772   I = 497.639   C = 386.797
+Community gain of C vs R:   25.974 DKK (6.3 %)
+Community gain of C vs I:   110.842 DKK (22.3 %)
+Manager budget B = sum(Pi) - C_grid: 163.766 DKK  (cap rent, should equal sum(nu*cap) = 163.766)
+Sum of members' benefit vs R:  -137.792 DKK   (= gain - B = -137.792)
+Sum of members' benefit vs I:  -52.924 DKK   (= gain - B = -52.924)
+Members worse off than under R: 13 of 16
+Members worse off than under I: 8 of 16
+
+--- Consistency checks (should all be ~0) ---
+sum J_R - obj_R       = 2.27e-13
+sum J_I - obj_I       = 5.68e-14
+sum J_C - (obj_C + B) = -1.14e-13
+
+--- Benefit by archetype [DKK] (positive = better off in C) ---
+           Delta_R  Delta_I
+archetype                  
+L1          -13.56    -8.44
+L1+BAT       -9.35   -13.22
+L1+PV         2.13     2.94
+L1+PV+BAT     6.45     6.83
+L2          -16.18    -8.76
+L2+BAT      -12.05   -13.75
+L2+PV        -0.52     1.41
+L2+PV+BAT     3.58     4.56
+L3          -21.16    -8.44
+L3+BAT      -17.05   -14.58
+L3+PV        -5.52    -0.40
+L3+PV+BAT    -1.42     1.02
+L4          -23.16     0.19
+L4+BAT      -19.05    -8.24
+L4+PV        -7.52     3.99
+L4+PV+BAT    -3.42     1.94
+
+--- Per member ---
+member archetype   J_R   J_I   J_C  Delta_R  Delta_I
+    C1        L1 26.70 31.82 40.26   -13.56    -8.44
+ C1_PV     L1+PV 23.75 24.57 21.63     2.13     2.94
+  C1_B    L1+BAT 27.34 23.47 36.69    -9.35   -13.22
+C1_PVB L1+PV+BAT 24.51 24.89 18.05     6.45     6.83
+    C2        L2 27.09 34.51 43.27   -16.18    -8.76
+ C2_PV     L2+PV 24.11 26.04 24.63    -0.52     1.41
+  C2_B    L2+BAT 27.65 25.94 39.69   -12.05   -13.75
+C2_PVB L2+PV+BAT 24.64 25.62 21.06     3.58     4.56
+    C3        L3 27.10 39.83 48.27   -21.16    -8.44
+ C3_PV     L3+PV 24.11 29.24 29.63    -5.52    -0.40
+  C3_B    L3+BAT 27.65 30.11 44.69   -17.05   -14.58
+C3_PVB L3+PV+BAT 24.64 27.08 26.06    -1.42     1.02
+    C4        L4 27.10 50.46 50.27   -23.16     0.19
+ C4_PV     L4+PV 24.11 35.62 31.63    -7.52     3.99
+  C4_B    L4+BAT 27.65 38.45 46.69   -19.05    -8.24
+C4_PVB L4+PV+BAT 24.64 30.00 28.06    -3.42     1.94

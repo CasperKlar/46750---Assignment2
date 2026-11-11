@@ -340,6 +340,55 @@ class ModelC:
 
         return self
 
+    def extract_duals(self):
+        """Read the duals of Model C (call after solve). Returns an hourly DataFrame and member settlement."""
+        c, T, I = self.community, self.T, self.I
+        cb, cap = self.con["community_balance"], self.con["dso_excess"]
+
+        beta = c.contract.tariff_discount_ratio
+        alpha = c.contract.penalty_DKK_per_kWh
+        P_imp, P_exp, P_exc, q = (self.var[k] for k in ("P_imp", "P_exp", "P_exc", "q"))
+
+        rows = []
+        for t in T:
+            rows.append({
+                "t": t,
+                "lambda": -cb[t].Pi,                 # internal price (DKK/kWh); sign flipped, see above
+                "nu": cap[t].Pi,                     # cap rent (DKK/kWh) >= 0
+                "p_da": c.energy_price[t],
+                "p_imp": c.energy_price[t] + (1 - beta) * c.import_tariff,
+                "p_exp": c.energy_price[t] - (1 - beta) * c.export_tariff,
+                "cap_kW": c.contract.capacity_limit_kW[t],
+                "P_imp": P_imp[t].X, "P_exp": P_exp[t].X, "P_exc": P_exc[t].X,
+            })
+        hourly = pd.DataFrame(rows).set_index("t")
+
+        # ---- Validation of the sign convention and the price relations ----
+        tol = 1e-6
+        imp_h = hourly["P_imp"] > tol
+        exp_h = hourly["P_exp"] > tol
+        res_imp = (hourly["lambda"] - hourly["p_imp"] - hourly["nu"])[imp_h].abs().max() if imp_h.any() else 0.0
+        res_exp = (hourly["lambda"] - hourly["p_exp"])[exp_h].abs().max() if exp_h.any() else 0.0
+        exc_h = hourly["P_exc"] > tol
+        res_exc = (hourly["nu"] - alpha)[exc_h].abs().max() if exc_h.any() else 0.0
+        print(f"[duals] max |lambda - (p_imp + nu)| in import hours : {res_imp:.2e}")
+        print(f"[duals] max |lambda - p_exp| in export hours        : {res_exp:.2e}")
+        print(f"[duals] max |nu - alpha| in exceedance hours        : {res_exc:.2e}")
+
+        # ---- Settlement and budget ----
+        lam = hourly["lambda"]
+        Pi = {i: sum(lam[t] * q[i, t].X for t in T) for i in I}     # member payments (DKK)
+        C_grid = sum(hourly.loc[t, "p_imp"] * hourly.loc[t, "P_imp"]
+                     - hourly.loc[t, "p_exp"] * hourly.loc[t, "P_exp"]
+                     + alpha * hourly.loc[t, "P_exc"] for t in T)
+        B = sum(Pi.values()) - C_grid
+        B_rent = float((hourly["nu"] * hourly["cap_kW"]).sum())
+        print(f"[settlement] budget B = {B:.4f} DKK, sum(nu * cap) = {B_rent:.4f} DKK")
+
+        self.duals = hourly
+        self.settlement = {"Pi": Pi, "C_grid": C_grid, "B": B, "B_rent": B_rent}
+        return hourly
+
     def solve(self):
         """Optimize Model C and validate the solution."""
         self.m.optimize()
@@ -354,6 +403,8 @@ class ModelC:
                     print(f"- {message}")
             else:
                 print(f"{key}: {value}")
+
+        self.extract_duals()
 
         return {
                     "model_name": "Model C",
