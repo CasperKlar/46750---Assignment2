@@ -17,8 +17,11 @@ from gurobipy import GRB
 
 from src.data_loader import load_community, list_communities
 from src.Q1_models import ModelI, ModelR, ModelC
-from src.Q1_results import collect_model_results, plot_hourly_imports_exports, plot_imports_vs_capacity, print_summary_table
+from src.Q1_results import (collect_model_results, plot_hourly_imports_exports, plot_imports_vs_capacity,
+                            print_summary_table, plot_Q1_sensitivity_manual,
+                            save_hourly_flows, plot_hourly_flow_difference)
 from src.Q2_models import build_pricing_problem, extract_pricing_result
+from src.config import SENSITIVITY_Q1_BETA, SENSITIVITY_Q1, SENSITIVITY_Q1_BETA_PAIR
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 
@@ -30,7 +33,7 @@ def main() -> None:
     ap.add_argument("--members", action="store_true", help="print the Assignment 1 summary of every member")
     ap.add_argument("--demo", action="store_true", help="run the scenario-generation demonstration")
     #adds our models I,R,C:
-    ap.add_argument("--Q1",choices=["I", "R", "C"],help="Run Question 1 model I, R, or C")
+    ap.add_argument("--Q1", action="store_true",help="Run all Question 1 models (I, R, C)")
     ap.add_argument("--Q2",choices=["DP0", "DPBB", "DPBBIR"],help="Run Question 2 pricing model")
     args = ap.parse_args()
 
@@ -55,8 +58,13 @@ def main() -> None:
         model_classes = {"I": ModelI, "R": ModelR, "C": ModelC}
         all_results = []
 
-        save_dir = RESULTS_DIR / args.community / args.day
-        save_dir.mkdir(parents=True, exist_ok=True)
+
+        if SENSITIVITY_Q1:
+            save_dir = RESULTS_DIR / args.community / args.day / SENSITIVITY_Q1_BETA
+            save_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            save_dir = RESULTS_DIR / args.community / args.day 
+            save_dir.mkdir(parents=True, exist_ok=True)
 
         for name in ("R", "I", "C"):
             model = model_classes[name](com, verbose=True)
@@ -72,7 +80,20 @@ def main() -> None:
         if all_results:
             plot_hourly_imports_exports(all_results, save_dir)
             plot_imports_vs_capacity(all_results, save_dir)
-            summary = print_summary_table(all_results, save_dir)
+            print_summary_table(all_results, save_dir)
+            plot_Q1_sensitivity_manual(RESULTS_DIR / args.community / args.day)
+            save_hourly_flows(all_results, save_dir)
+            
+            # difference plot, only once both beta runs exist
+            if SENSITIVITY_Q1:
+                day_dir = RESULTS_DIR / args.community / args.day
+                tag_a, tag_b = SENSITIVITY_Q1_BETA_PAIR
+                dir_a, dir_b = day_dir / tag_a, day_dir / tag_b
+                if (dir_a / "hourly_flows.csv").exists() and (dir_b / "hourly_flows.csv").exists():
+                    label_a = "β=" + tag_a.split("_")[-1]
+                    label_b = "β=" + tag_b.split("_")[-1]
+                    plot_hourly_flow_difference(dir_a, dir_b, label_a, label_b, day_dir)
+
             print(f"Comparison CSV and plots saved to: {save_dir}")
 
     # Q2
@@ -112,10 +133,8 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 
-
-#RUN: python main.py --community base --day d1 --Q1 C
 #base is the community configuration
 #d1 is the day being simulated.
-#Q1 model C
 
+# Run Q1: python main.py --community base --day d1 --Q1 
 # Run Q2: python main.py --community base --day d1 --Q2 DP0
