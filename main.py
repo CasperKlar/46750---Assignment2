@@ -20,6 +20,7 @@ from src.Q1_models import ModelI, ModelR, ModelC
 from src.Q1_results import (collect_model_results, plot_hourly_imports_exports, plot_imports_vs_capacity,
                             print_summary_table, plot_Q1_sensitivity_manual,
                             save_hourly_flows, plot_hourly_flow_difference)
+from src.Q2_models import build_pricing_problem, extract_pricing_result
 from src.config import SENSITIVITY_Q1_BETA, SENSITIVITY_Q1, SENSITIVITY_Q1_BETA_PAIR
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
@@ -33,6 +34,7 @@ def main() -> None:
     ap.add_argument("--demo", action="store_true", help="run the scenario-generation demonstration")
     #adds our models I,R,C:
     ap.add_argument("--Q1", action="store_true",help="Run all Question 1 models (I, R, C)")
+    ap.add_argument("--Q2",choices=["DP0", "DPBB", "DPBBIR"],help="Run Question 2 pricing model")
     args = ap.parse_args()
 
     com = load_community(args.community, day=args.day)
@@ -94,13 +96,45 @@ def main() -> None:
 
             print(f"Comparison CSV and plots saved to: {save_dir}")
 
+    # Q2
+    if args.Q2:
+        print(f"\n--- Running Model {args.Q2} ---")
+
+        model, variables = build_pricing_problem(
+            com,
+            variant=args.Q2
+        )
+
+        model.Params.OutputFlag = 1
+        model.Params.TimeLimit = 300
+        model.Params.MIPGap = 0.01
+
+        model.optimize()
+
+        if model.SolCount > 0:
+            result = extract_pricing_result(model, variables)
+
+            print(f"\n--- Model {args.Q2} Results ---")
+            print(f"Solver status: {model.Status}")
+            print(f"Optimality gap: {model.MIPGap:.4%}")
+            print(f"Community cost [DKK]: {result.objective_DKK:.3f}")
+            print(f"Grid cost [DKK]: {result.grid_cost_DKK:.3f}")
+            print(f"Internal prices [DKK/kWh]:")
+            print(result.prices_DKK_per_kWh)
+
+        else:
+            print(f"Model {args.Q2} found no feasible solution.")
+            print(f"Gurobi status: {model.Status}")
+
+   
     # The model constructors and execution calls will go here
     # once their interfaces are implemented.
 
 if __name__ == "__main__":
     main()
 
-
-#RUN: python main.py --community base --day d1 --Q1 
 #base is the community configuration
 #d1 is the day being simulated.
+
+# Run Q1: python main.py --community base --day d1 --Q1 
+# Run Q2: python main.py --community base --day d1 --Q2 DP0
