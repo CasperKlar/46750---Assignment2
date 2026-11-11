@@ -275,3 +275,35 @@ def plot_hourly_flow_difference(dir_a, dir_b, label_a, label_b, save_dir):
     save_dir.mkdir(parents=True, exist_ok=True)
     plt.savefig(save_dir / "hourly_flows_difference.png", dpi=300, bbox_inches="tight")
     plt.close()
+
+def plot_duals(hourly, savepath, title_suffix=""):
+    """Top: internal price lambda vs day-ahead and discounted import/export prices.
+    Bottom: cap rent nu. Hours where the cap binds (nu > 0) are shaded."""
+    t = hourly.index
+    binding = hourly["nu"] > 1e-6
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 6), sharex=True,
+                                   gridspec_kw={"height_ratios": [2, 1]})
+
+    ax1.step(t, hourly["lambda"], where="mid", lw=2.2, color="C3", label=r"internal price $\lambda_t$")
+    ax1.step(t, hourly["p_imp"], where="mid", ls="--", color="C0", label=r"$p^{imp}_t$ (discounted)")
+    ax1.step(t, hourly["p_exp"], where="mid", ls="--", color="C2", label=r"$p^{exp}_t$ (discounted)")
+    ax1.step(t, hourly["p_da"], where="mid", ls=":", color="grey", label=r"day-ahead $p_t$")
+    ax1.set_ylabel("DKK/kWh")
+    ax1.legend(ncol=2, fontsize=12)
+    ax1.grid(alpha=0.3)
+
+    ax2.bar(t, hourly["nu"], color="C1", width=0.8, label=r"cap rent $\nu_t$")
+    ax2.set_ylabel("DKK/kWh")
+    ax2.set_xlabel("Hour")
+    ax2.legend(fontsize=12)
+    ax2.grid(alpha=0.3)
+
+    for ax in (ax1, ax2):
+        for h in t[binding]:
+            ax.axvspan(h - 0.5, h + 0.5, color="grey", alpha=0.15, lw=0)
+
+    ax1.set_title(f"Model C: internal price and cap rent {title_suffix}\n(shaded: hours where the cap binds)")
+    fig.tight_layout()
+    fig.savefig(savepath/"duals.png", dpi=200)
+    return fig

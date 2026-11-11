@@ -404,6 +404,8 @@ class ModelC:
             else:
                 print(f"{key}: {value}")
 
+        self.extract_duals()
+
         return {
                     "model_name": "Model C",
                     "status": self.m.Status,
