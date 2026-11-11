@@ -3,6 +3,17 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
 
+
+from src.config import plot_fonts,MODEL_C_COLOR, MODEL_I_COLOR, MODEL_R_COLOR
+
+#plotting initialization
+plot_fonts()
+MODEL_COLORS = {
+    "Model R": MODEL_R_COLOR,
+    "Model I": MODEL_I_COLOR,
+    "Model C": MODEL_C_COLOR,
+}
+
 def get_values(variables):
     "helper function to fetch values"
     return {key: variable.X for key, variable in variables.items()}
@@ -81,11 +92,13 @@ def collect_model_results(model, model_name, community):
 
 def plot_hourly_imports_exports(results, save_dir):
     "Hourly imports and exports for all three models"
+
     fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
 
     for result in results:
-        axes[0].plot(result["hours"], result["imports"], marker="o", markersize=3, label=result["name"])
-        axes[1].plot(result["hours"], result["exports"], marker="o", markersize=3, label=result["name"])
+        c = MODEL_COLORS[result["name"]]
+        axes[0].plot(result["hours"], result["imports"], marker="o", markersize=3, color=c,  label=result["name"])
+        axes[1].plot(result["hours"], result["exports"], marker="o", markersize=3, color=c, label=result["name"])
 
     axes[0].set_title("Hourly community grid imports")
     axes[0].set_ylabel("Import (kWh)")
@@ -110,15 +123,17 @@ def plot_hourly_imports_exports(results, save_dir):
 def plot_imports_vs_capacity(results, save_dir):
     "Compare hourly aggregate imports with the shared DSO capacity"
 
+    plot_fonts()
+
     fig, ax = plt.subplots(figsize=(12, 5))
 
     capacity = results[0]["capacity"]
     hours = results[0]["hours"]
 
-    ax.step(hours, capacity, where="mid", linestyle="--", linewidth=2, label="DSO capacity limit")
+    ax.step(hours, capacity, where="mid", linestyle="--", linewidth=2, color="red", label="DSO capacity limit")
 
     for result in results:
-        ax.plot(hours, result["imports"], marker="o", markersize=3, label=result["name"])
+        ax.plot(hours, result["imports"], marker="o", markersize=3, color=MODEL_COLORS[result["name"]], label=result["name"])
 
     ax.set_title("Hourly community imports versus DSO capacity")
     ax.set_xlabel("Hour")
@@ -164,37 +179,29 @@ def print_summary_table(results, save_dir):
 
     return summary
 
+
 def plot_Q1_sensitivity_manual(save_dir):
     "plots the results for the sensitivity, which are manually inputtet per the results generated"
 
-    #plot parameters
-    plt.rcParams.update({
-    'font.size': 14,          # General text
-    'axes.titlesize': 17,     # Plot title
-    'axes.labelsize': 16,     # Axis labels
-    'xtick.labelsize': 13,    # X-axis tick labels
-    'ytick.labelsize': 13,    # Y-axis tick labels
-    'legend.fontsize': 13     # Legend
-    })
-
+    plot_fonts()
+    
     # Beta values
-    beta_values = [0.7, 0.75, 0.8, 0.9, 1.0]
+    beta_values = [0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0]
 
-    # 1. PROFIT / OBJECTIVE VALUES (DKK)
-    # 1. PROFIT / OBJECTIVE VALUES (DKK)
-    profit_R = [412.772, 412.772, 412.772, 412.772, 412.772]
-    profit_I = [502.148, 497.639, 493.118, 483.998, 474.806]
-    profit_C = [391.740, 386.797, 381.785, 371.429, 361.038]
+    # 1. OBJECTIVE VALUES (DKK)
+    profit_R = [412.772, 412.772, 412.772, 412.772, 412.772, 412.772, 412.772]
+    profit_I = [502.148, 497.639, 493.118, 488.566, 483.998, 479.402, 474.806]
+    profit_C = [391.740, 386.797, 381.785, 376.607, 371.429, 366.251, 361.038]
 
     plt.figure(figsize=(8, 5))
 
-    plt.plot(beta_values, profit_R, marker='v', label='Base (R)')
-    plt.plot(beta_values, profit_I, marker='o', label='Individual contract (I)')
-    plt.plot(beta_values, profit_C, marker='s', label='Community contract (C)')
+    plt.plot(beta_values, profit_R, marker='v', color=MODEL_R_COLOR, label='Base (R)')
+    plt.plot(beta_values, profit_I, marker='o', color=MODEL_I_COLOR, label='Individual contract (I)')
+    plt.plot(beta_values, profit_C, marker='s', color=MODEL_C_COLOR, label='Community contract (C)')
 
     plt.xlabel(r'$\beta^{DSO}$')
-    plt.ylabel('Profit / Objective (DKK)')
-    plt.title('Profit as a Function of DSO Discount')
+    plt.ylabel('Objective (DKK)')
+    plt.title('Objective value as a Function of DSO Discount')
     plt.xticks(beta_values)
     plt.grid(True, alpha=0.3)
     plt.legend()
@@ -204,15 +211,15 @@ def plot_Q1_sensitivity_manual(save_dir):
     plt.savefig(save_dir / "ProfitQ1.png", dpi=300, bbox_inches="tight")
 
     # 2. Load deviation (kWh)
-    load_dev_R = [14.780, 14.780, 14.780, 14.780, 14.780]
-    load_dev_I = [17.199, 17.199, 17.199, 17.808, 19.050]
-    load_dev_C = [11.260, 11.260, 14.213, 14.213, 14.213]
+    #load_dev_R = [14.780, 14.780, 14.780, 14.780, 14.780, 14.780, 14.780]
+    load_dev_I = [117.199, 117.199, 117.199, 117.746, 117.808, 118.250, 119.050]
+    load_dev_C = [111.260, 111.260, 114.213, 114.213, 114.213, 114.213, 114.213]
 
     plt.figure(figsize=(8, 5))
 
-    plt.plot(beta_values, load_dev_R, marker='v', label='Base (R)')
-    plt.plot(beta_values, load_dev_I, marker='o', label='Individual contract (I)')
-    plt.plot(beta_values, load_dev_C, marker='s', label='Community contract (C)')
+    #plt.plot(beta_values, load_dev_R, marker='v', label='Base (R)')
+    plt.plot(beta_values, load_dev_I, marker='o', color=MODEL_I_COLOR, label='Individual contract (I)')
+    plt.plot(beta_values, load_dev_C, marker='s', color=MODEL_C_COLOR, label='Community contract (C)')
 
     plt.xlabel(r'$\beta^{DSO}$')
     plt.ylabel('Load Deviation (kWh)')
@@ -221,4 +228,50 @@ def plot_Q1_sensitivity_manual(save_dir):
     plt.grid(True, alpha=0.3)
     plt.legend()
     plt.tight_layout()
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
     plt.savefig(save_dir / "LoadDevSQ1.png", dpi=300, bbox_inches="tight")
+
+
+def save_hourly_flows(results, save_dir):
+    """Save hourly imports/exports of all models to <save_dir>/hourly_flows.csv"""
+    rows = [
+        {"model": r["name"], "hour": t, "import": imp, "export": exp}
+        for r in results
+        for t, imp, exp in zip(r["hours"], r["imports"], r["exports"])
+    ]
+    pd.DataFrame(rows).to_csv(Path(save_dir) / "hourly_flows.csv", index=False)
+
+
+def plot_hourly_flow_difference(dir_a, dir_b, label_a, label_b, save_dir):
+    """Plot hourly import/export difference (b - a) per model from two saved CSVs."""
+    a = pd.read_csv(Path(dir_a) / "hourly_flows.csv")
+    b = pd.read_csv(Path(dir_b) / "hourly_flows.csv")
+
+    df = a.merge(b, on=["model", "hour"], suffixes=("_a", "_b"))
+    df["d_import"] = df["import_b"] - df["import_a"]
+    df["d_export"] = df["export_b"] - df["export_a"]
+
+    fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+    for model, g in df.groupby("model", sort=False):
+        c = MODEL_COLORS[model]
+        axes[0].plot(g["hour"], g["d_import"], marker="o", markersize=3, color=c, label=model)
+        axes[1].plot(g["hour"], g["d_export"], marker="o", markersize=3, color=c, label=model)
+
+    for ax in axes:
+        ax.axhline(0, color="black", lw=0.8)
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+
+    axes[0].set_title(f"Change in hourly grid imports (({label_b}) − ({label_a}))")
+    axes[0].set_ylabel("Δ Import (kWh)")
+    axes[1].set_title(f"Change in hourly grid exports (({label_b}) − ({label_a}))")
+    axes[1].set_xlabel("Hour")
+    axes[1].set_ylabel("Δ Export (kWh)")
+    axes[1].set_xticks(range(24))
+
+    plt.tight_layout()
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+    plt.savefig(save_dir / "hourly_flows_difference.png", dpi=300, bbox_inches="tight")
+    plt.close()

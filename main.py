@@ -17,8 +17,10 @@ from gurobipy import GRB
 
 from src.data_loader import load_community, list_communities
 from src.Q1_models import ModelI, ModelR, ModelC
-from src.Q1_results import collect_model_results, plot_hourly_imports_exports, plot_imports_vs_capacity, print_summary_table, plot_Q1_sensitivity_manual
-from src.config import SENSITIVITY_Q1_BETA, SENSITIVITY_Q1
+from src.Q1_results import (collect_model_results, plot_hourly_imports_exports, plot_imports_vs_capacity,
+                            print_summary_table, plot_Q1_sensitivity_manual,
+                            save_hourly_flows, plot_hourly_flow_difference)
+from src.config import SENSITIVITY_Q1_BETA, SENSITIVITY_Q1, SENSITIVITY_Q1_BETA_PAIR
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 
@@ -78,6 +80,18 @@ def main() -> None:
             plot_imports_vs_capacity(all_results, save_dir)
             print_summary_table(all_results, save_dir)
             plot_Q1_sensitivity_manual(RESULTS_DIR / args.community / args.day)
+            save_hourly_flows(all_results, save_dir)
+            
+            # difference plot, only once both beta runs exist
+            if SENSITIVITY_Q1:
+                day_dir = RESULTS_DIR / args.community / args.day
+                tag_a, tag_b = SENSITIVITY_Q1_BETA_PAIR
+                dir_a, dir_b = day_dir / tag_a, day_dir / tag_b
+                if (dir_a / "hourly_flows.csv").exists() and (dir_b / "hourly_flows.csv").exists():
+                    label_a = "β=" + tag_a.split("_")[-1]
+                    label_b = "β=" + tag_b.split("_")[-1]
+                    plot_hourly_flow_difference(dir_a, dir_b, label_a, label_b, day_dir)
+
             print(f"Comparison CSV and plots saved to: {save_dir}")
 
     # The model constructors and execution calls will go here
