@@ -282,7 +282,7 @@ def plot_duals(hourly, savepath, title_suffix=""):
     t = hourly.index
     binding = hourly["nu"] > 1e-6
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 6), sharex=True,
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True,
                                    gridspec_kw={"height_ratios": [2, 1]})
 
     ax1.step(t, hourly["lambda"], where="mid", lw=2.2, color="C3", label=r"internal price $\lambda_t$")
@@ -290,13 +290,13 @@ def plot_duals(hourly, savepath, title_suffix=""):
     ax1.step(t, hourly["p_exp"], where="mid", ls="--", color="C2", label=r"$p^{exp}_t$ (discounted)")
     ax1.step(t, hourly["p_da"], where="mid", ls=":", color="grey", label=r"day-ahead $p_t$")
     ax1.set_ylabel("DKK/kWh")
-    ax1.legend(ncol=2, fontsize=12)
+    ax1.legend(ncol=2)
     ax1.grid(alpha=0.3)
 
     ax2.bar(t, hourly["nu"], color="C1", width=0.8, label=r"cap rent $\nu_t$")
     ax2.set_ylabel("DKK/kWh")
     ax2.set_xlabel("Hour")
-    ax2.legend(fontsize=12)
+    ax2.legend()
     ax2.grid(alpha=0.3)
 
     for ax in (ax1, ax2):
