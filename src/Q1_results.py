@@ -307,3 +307,81 @@ def plot_duals(hourly, savepath, title_suffix=""):
     fig.tight_layout()
     fig.savefig(savepath/"duals.png", dpi=200)
     return fig
+
+def _appliance_cost(model, i):
+    """Disutility + PV cost of member i (same definition in R, I and C)."""
+    mem = model.community.members[i]
+    cL = mem.linear_disutility if mem.linear_disutility is not None else 0.0
+    dis = cL * sum(model.var["d_+"][i, t].X + model.var["d_-"][i, t].X for t in model.T)
+    pv = mem.pv_marginal_cost * sum(model.var["g"][i, t].X for t in model.T)
+    return dis + pv
+
+
+def member_costs(model_r, model_i, model_c) -> pd.DataFrame:
+    """Total cost J_i of every member in R, I and C, and the benefit of C against R and I."""
+    com = model_c.community
+    T = model_c.T
+    beta = com.contract.tariff_discount_ratio
+    alpha = com.contract.penalty_DKK_per_kWh
+    p = com.energy_price
+
+    rows = []
+    for i in model_c.I:
+        mem = com.members[i]
+
+        # R: full tariffs, no penalty
+        grid_R = sum((p[t] + com.import_tariff) * model_r.var["q_imp"][i, t].X
+                     - (p[t] - com.export_tariff) * model_r.var["q_exp"][i, t].X for t in T)
+        J_R = _appliance_cost(model_r, i) + grid_R
+
+        # I: discounted tariffs on own flows + penalty on own exceedance
+        grid_I = sum((p[t] + (1 - beta) * com.import_tariff) * model_i.var["q_imp"][i, t].X
+                     - (p[t] - (1 - beta) * com.export_tariff) * model_i.var["q_exp"][i, t].X for t in T)
+        penalty_I = alpha * sum(model_i.var["e"][i, t].X for t in T)
+        J_I = _appliance_cost(model_i, i) + grid_I + penalty_I
+
+        # C: the payment is the settlement Pi_i = sum_t lambda_t * q_it
+        Pi_C = model_c.settlement["Pi"][i]
+        J_C = _appliance_cost(model_c, i) + Pi_C
+
+        rows.append({
+            "member": mem.consumer_id, "archetype": mem.archetype,
+            "J_R": J_R, "J_I": J_I, "J_C": J_C,
+            "Pi_C": Pi_C, "penalty_I": penalty_I,
+            "Delta_R": J_R - J_C,      # benefit of the community contract vs no contract
+            "Delta_I": J_I - J_C,      # benefit of the community contract vs individual contracts
+        })
+    return pd.DataFrame(rows)
+
+
+def print_settlement_summary(df, model_r, model_i, model_c, save_path=None):
+    obj_R, obj_I, obj_C = model_r.m.ObjVal, model_i.m.ObjVal, model_c.m.ObjVal
+    B = model_c.settlement["B"]
+    gain_R, gain_I = obj_R - obj_C, obj_I - obj_C
+
+    lines = [
+        "=== Q1 settlement summary (model C vs R and I) ===",
+        f"Community objective [DKK]:  R = {obj_R:.3f}   I = {obj_I:.3f}   C = {obj_C:.3f}",
+        f"Community gain of C vs R:   {gain_R:.3f} DKK ({100 * gain_R / obj_R:.1f} %)",
+        f"Community gain of C vs I:   {gain_I:.3f} DKK ({100 * gain_I / obj_I:.1f} %)",
+        f"Manager budget B = sum(Pi) - C_grid: {B:.3f} DKK  (cap rent, should equal sum(nu*cap) = {model_c.settlement['B_rent']:.3f})",
+        f"Sum of members' benefit vs R:  {df['Delta_R'].sum():.3f} DKK   (= gain - B = {gain_R - B:.3f})",
+        f"Sum of members' benefit vs I:  {df['Delta_I'].sum():.3f} DKK   (= gain - B = {gain_I - B:.3f})",
+        f"Members worse off than under R: {(df['Delta_R'] < -1e-6).sum()} of {len(df)}",
+        f"Members worse off than under I: {(df['Delta_I'] < -1e-6).sum()} of {len(df)}",
+        "",
+        "--- Consistency checks (should all be ~0) ---",
+        f"sum J_R - obj_R       = {df['J_R'].sum() - obj_R:.2e}",
+        f"sum J_I - obj_I       = {df['J_I'].sum() - obj_I:.2e}",
+        f"sum J_C - (obj_C + B) = {df['J_C'].sum() - (obj_C + B):.2e}",
+        "",
+        "--- Benefit by archetype [DKK] (positive = better off in C) ---",
+        df.groupby("archetype")[["Delta_R", "Delta_I"]].sum().round(2).to_string(),
+        "",
+        "--- Per member ---",
+        df[["member", "archetype", "J_R", "J_I", "J_C", "Delta_R", "Delta_I"]].round(2).to_string(index=False),
+    ]
+    text = "\n".join(lines)
+    print("\n" + text)
+    if save_path is not None:
+        save_path.write_text(text, encoding="utf-8")

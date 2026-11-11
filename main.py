@@ -19,7 +19,8 @@ from src.data_loader import load_community, list_communities
 from src.Q1_models import ModelI, ModelR, ModelC
 from src.Q1_results import (collect_model_results, plot_hourly_imports_exports, plot_imports_vs_capacity,
                             print_summary_table, plot_Q1_sensitivity_manual,
-                            save_hourly_flows, plot_hourly_flow_difference, plot_duals)
+                            save_hourly_flows, plot_hourly_flow_difference, plot_duals,
+                            member_costs, print_settlement_summary)
 from src.Q2_models import build_pricing_problem, extract_pricing_result
 from src.config import SENSITIVITY_Q1_BETA, SENSITIVITY_Q1, SENSITIVITY_Q1_BETA_PAIR
 
@@ -57,6 +58,7 @@ def main() -> None:
     if args.Q1:
         model_classes = {"I": ModelI, "R": ModelR, "C": ModelC}
         all_results = []
+        models = {}
 
 
         if SENSITIVITY_Q1:
@@ -75,8 +77,7 @@ def main() -> None:
                 print(f"Model {name} did not solve to optimality; status: {model.m.Status}")
                 continue
 
-            if name == "C":
-                model_c = model
+            models[name] = model
 
             all_results.append(collect_model_results(model, f"Model {name}", com))
 
@@ -87,10 +88,17 @@ def main() -> None:
             plot_Q1_sensitivity_manual(RESULTS_DIR / args.community / args.day)
             save_hourly_flows(all_results, save_dir)
 
+            model_c = models.get("C")
             if model_c is not None:   
                 plot_duals(model_c.duals, save_dir)
                 model_c.duals.to_csv(save_dir / "duals_C.csv")
                 print(f"Budget B = {model_c.settlement['B']:.3f} DKK")
+
+            if all(k in models for k in ("R", "I", "C")):
+                table = member_costs(models["R"], models["I"], models["C"])
+                table.to_csv(save_dir / "member_costs.csv", index=False)
+                print_settlement_summary(table, models["R"], models["I"], models["C"],
+                                         save_path=save_dir / "settlement_summary.txt")
 
             # difference plot, only once both beta runs exist
             if SENSITIVITY_Q1:
