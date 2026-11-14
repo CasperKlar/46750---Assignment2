@@ -13,6 +13,11 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 
+# Python compiled files
+*.pyc
+*.pyo
+__pycache__/
+
 # results
 /results/*
 !/results/.gitkeep

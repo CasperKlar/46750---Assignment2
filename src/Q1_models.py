@@ -515,13 +515,13 @@ class ModelDP:
         return self
 
     def solve(self):
-        """Optimize Model C and validate the solution."""
+        """Optimize Model DP and validate the solution."""
         self.m.optimize()
         if self.m.Status != GRB.OPTIMAL:
-            raise RuntimeError(f"Model C did not reach optimality. Status: {self.m.Status}")
+            raise RuntimeError(f"Model DP did not reach optimality. Status: {self.m.Status}")
 
         validation = validate_solution(self.m)
-        print("\n--- Model C validation ---")
+        print("\n--- Model DP validation ---")
         for key, value in validation.items():
             if key == "validation_messages":
                 for message in value:
@@ -530,7 +530,7 @@ class ModelDP:
                 print(f"{key}: {value}")
 
         return {
-                    "model_name": "Model C",
+                    "model_name": "Model DP",
                     "status": self.m.Status,
                     "objective": self.m.ObjVal,
                     **validation,
