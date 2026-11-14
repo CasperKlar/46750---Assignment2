@@ -20,6 +20,6 @@ MODEL_I_COLOR = "orange"
 MODEL_C_COLOR = "green"
 
 #Q1 sensititvity specifics
-SENSITIVITY_Q1 = False
-SENSITIVITY_Q1_BETA = "Q1_S_beta_0.75" #this is only for naming results, manually changed in JSON file 
+SENSITIVITY_Q1 = True
+SENSITIVITY_Q1_BETA = "Q1_S_beta_0.45" #this is only for naming results, manually changed in JSON file 
 SENSITIVITY_Q1_BETA_PAIR = ("Q1_S_beta_0.75", "Q1_S_beta_1.0")   # (a, b) -> plot shows b - a
