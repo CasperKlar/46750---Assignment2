@@ -413,7 +413,7 @@ class ModelC:
                     **validation,
                 }
 
-
+'''Not used
 class ModelDP:
         
     """Assignment 2, Model DP: manager-decided community-level imports, exports, and DSO cap."""
@@ -536,4 +536,4 @@ class ModelDP:
                     **validation,
                 }
 
-
+'''
