@@ -21,6 +21,7 @@ from typing import Mapping
 import numpy as np
 import gurobipy as gp
 from gurobipy import GRB
+from src.config import END_OF_DAY_CHARGE
 
 
 @dataclass
@@ -43,12 +44,12 @@ def build_pricing_problem(
     variant: str = 'DP0',
     benchmark_R: Mapping[str, float] | None = None,
     benchmark_I: Mapping[str, float] | None = None,
-    ir_soft: bool = True,
+    ir_soft: bool = False,
     ir_penalty_DKK: float = 1e4,
     ir_tolerance_DKK: float = 1e-5,
     price_lower: np.ndarray | None = None,
     price_upper: np.ndarray | None = None,
-    end_E_bat_rule: str = 'initial',
+    end_E_bat_rule: str = 'final',
 ):
     """Build a Gurobi MILP for the deterministic Q2 pricing problem.
 
@@ -62,9 +63,11 @@ def build_pricing_problem(
         Each member's *full* cost in benchmark R and I, required for DPBBIR.
     ir_soft : bool
         If True, permit penalized IR violations. Otherwise enforce hard IR.
-    end_E_bat_rule : {'initial', 'none'}
-        'initial' requires final battery SoC >= initial SoC. 'none' leaves
-        end-of-day SoC free (subject to the capacity bounds).
+    end_E_bat_rule : {'final', 'initial', 'none'}
+        'final' requires final SOC >= battery_final_soc_kWh,
+        or END_OF_DAY_CHARGE if the value is None.
+        'initial' requires final SOC >= initial SOC.
+        'none' leaves final SOC subject only to physical bounds.
 
     Returns
     -------
@@ -73,8 +76,10 @@ def build_pricing_problem(
     """
     if variant not in {'DP0', 'DPBB', 'DPBBIR'}:
         raise ValueError('variant must be DP0, DPBB or DPBBIR')
-    if end_E_bat_rule not in {'initial', 'none'}:
-        raise ValueError('end_E_bat_rule must be initial or none')
+    if end_E_bat_rule not in {'final', 'initial', 'none'}:
+        raise ValueError(
+            "end_E_bat_rule must be 'final', 'initial' or 'none'"
+        )
     if variant == 'DPBBIR' and (benchmark_R is None or benchmark_I is None):
         raise ValueError('DPBBIR requires per-member benchmark_R and benchmark_I costs')
 
@@ -162,10 +167,27 @@ def build_pricing_problem(
             eta_ch = float(m.battery_charging_efficiency)
             eta_dis = float(m.battery_discharging_efficiency)
             initial = float(m.battery_initial_soc_kWh)
+            final_soc = float(
+                m.battery_final_soc_kWh
+                if m.battery_final_soc_kWh is not None
+                else END_OF_DAY_CHARGE
+                )
         else:
             s_ch = s_dis = E_bat = rho = None
             mu_bat_min = mu_bat_max = mu_ch_min = mu_ch_max = mu_dis_min = mu_dis_max = None
             S = P_ch = P_dis = initial = 0.0
+            final_soc = 0.0
+            initial = 0.0
+            final_soc = 0.0
+
+        def soc_lower_bound(t):
+            if t != T - 1:
+                return 0.0
+            if end_E_bat_rule == 'final':
+                return final_soc
+            if end_E_bat_rule == 'initial':
+                return initial
+            return 0.0
 
         for t in hours:
             # Primal feasibility and complementarity.
@@ -185,7 +207,7 @@ def build_pricing_problem(
             model.addConstr(xi_neg[t] <= c_L)
 
             # Load stationarity, with lambda_{i,t} = x_t.
-            model.addConstr(-xi_pos[t] + xi_neg[t] + mu_L_min[t] - mu_L_max[t] + mu_E_min - x[t] == 0,  #xi_pos, xi_neg (deviation constraints), mu_L_min, mu_L_max (upper and lower load limits), mu_E_min (min daily energy), x[t] member energy balance (see Table 4 in LateX)
+            model.addConstr(xi_pos[t] - xi_neg[t] - mu_L_min[t] + mu_L_max[t] - mu_E_min + x[t] == 0,  #xi_pos, xi_neg (deviation constraints), mu_L_min, mu_L_max (upper and lower load limits), mu_E_min (min daily energy), x[t] member energy balance (see Table 4 in LateX)
                             name=f'{i}_station_l[{t}]')
             pv_term = g[t] if has_pv else 0
             ch_term = s_ch[t] if has_battery else 0
@@ -204,7 +226,9 @@ def build_pricing_problem(
                 prev_E_bat = initial if t == 0 else E_bat[t - 1]
                 model.addConstr(E_bat[t] - prev_E_bat - eta_ch * s_ch[t]
                                 + s_dis[t] / eta_dis == 0, name=f'{i}_soc_balance[{t}]')
-                min_E_bat = initial if (end_E_bat_rule == 'initial' and t == T - 1) else 0.0
+                
+                min_E_bat = soc_lower_bound(t)
+                
                 model.addConstr(E_bat[t] >= min_E_bat)
                 model.addConstr(E_bat[t] <= S)
                 model.addConstr(s_ch[t] <= P_ch)
@@ -215,12 +239,13 @@ def build_pricing_problem(
                 perp(P_ch - s_ch[t], mu_ch_max[t], f'{i}_chmax[{t}]')
                 perp(s_dis[t], mu_dis_min[t], f'{i}_dismin[{t}]')
                 perp(P_dis - s_dis[t], mu_dis_max[t], f'{i}_dismax[{t}]')
-                model.addConstr(mu_ch_min[t] - mu_ch_max[t] - x[t] - eta_ch * rho[t] == 0,
+                model.addConstr(-mu_ch_min[t] + mu_ch_max[t] + x[t] - eta_ch * rho[t] == 0,
                                 name=f'{i}_station_charge[{t}]')
-                model.addConstr(mu_dis_min[t] - mu_dis_max[t] + x[t] + rho[t] / eta_dis == 0,
+                model.addConstr(-mu_dis_min[t] + mu_dis_max[t] - x[t] + rho[t] / eta_dis == 0,
+
                                 name=f'{i}_station_discharge[{t}]')
                 next_rho = rho[t + 1] if t + 1 < T else 0
-                model.addConstr(rho[t] - next_rho + mu_bat_min[t] - mu_bat_max[t] == 0,
+                model.addConstr(rho[t] - next_rho - mu_bat_min[t] + mu_bat_max[t] == 0,
                                 name=f'{i}_station_soc[{t}]')
 
         E_min = float(m.min_daily_energy_kWh)
@@ -236,10 +261,16 @@ def build_pricing_problem(
             if has_pv:
                 dual += -float(pv_avail[t]) * mu_PV_max[t]
             if has_battery:
-                min_E_bat = initial if (end_E_bat_rule == 'initial' and t == T - 1) else 0.0
-                dual += min_E_bat * mu_bat_min[t] - S * mu_bat_max[t] - P_ch * mu_ch_max[t] - P_dis * mu_dis_max[t]
+                min_E_bat = soc_lower_bound(t)
+
+                dual += (
+                    min_E_bat * mu_bat_min[t]
+                    - S * mu_bat_max[t]
+                    - P_ch * mu_ch_max[t]
+                    - P_dis * mu_dis_max[t]
+                )
         if has_battery:
-            dual += initial * rho[0]
+            dual -= initial * rho[0]
         D[i] = dual
 
         internal_cost = gp.quicksum(c_L * (d_pos[t] + d_neg[t])
@@ -277,13 +308,19 @@ def build_pricing_problem(
             else:
                 model.addConstr(D[i] <= limit + ir_tolerance_DKK, name=f'{i}_IR')
 
-    objective = grid_cost + gp.quicksum(physical_cost_terms)
-    if ir_soft and variant == 'DPBBIR':
-        objective += ir_penalty_DKK * gp.quicksum(ir_slack.values())
-    model.setObjective(objective, GRB.MINIMIZE)
+    #objective = grid_cost + gp.quicksum(physical_cost_terms)
+    #if ir_soft and variant == 'DPBBIR':
+    #    objective += ir_penalty_DKK * gp.quicksum(ir_slack.values())
+    #model.setObjective(objective, GRB.MINIMIZE)
+    
+    community_cost = grid_cost + gp.quicksum(physical_cost_terms)
+
+    model.setObjective(community_cost, GRB.MINIMIZE)
+
 
     variables = dict(x=x, P_imp=P_imp, P_exp=P_exp, P_exc=P_exc, net=net,
-                     dual_cost=D, payment=Pi, grid_cost=grid_cost,
+                     dual_cost=D, payment=Pi, grid_cost=grid_cost, 
+                     community_cost=community_cost, physical_cost_terms=physical_cost_terms,
                      ir_slack=ir_slack, follower=follower_variables, ids=IDs,
                      hours=hours)
     return model, variables
@@ -295,7 +332,7 @@ def extract_pricing_result(model, v):
         raise RuntimeError(f'No solution found. Gurobi status: {model.Status}')
     return PricingResult(
         status=model.Status,
-        objective_DKK=model.ObjVal,
+        objective_DKK=v["community_cost"].getValue(),
         grid_cost_DKK=v['grid_cost'].getValue(),
         prices_DKK_per_kWh=np.array([v['x'][t].X for t in v['hours']]),
         import_kWh=np.array([v['P_imp'][t].X for t in v['hours']]),
@@ -322,3 +359,424 @@ if __name__ == '__main__':
         print('Community cost [DKK]:', round(result.objective_DKK, 2))
         print('Internal prices [DKK/kWh]:', np.round(result.prices_DKK_per_kWh, 3))
         print('Grid cost [DKK]:', round(result.grid_cost_DKK, 2))
+
+"""
+def solve_lexicographic_ir(
+    model,
+    variables,
+    ir_tolerance=1e-5,
+    mip_gap=1e-5,
+):
+
+#    Solve the relaxed IR model lexicographically.
+
+#    Stage 1:
+#        Minimize total IR violation.
+
+#    Stage 2:
+#        Minimize community cost while preserving
+#        the Stage 1 minimum IR violation.
+
+    if not variables["ir_slack"]:
+        raise ValueError("Model has no IR slack variables.")
+
+    total_slack = gp.quicksum(
+        variables["ir_slack"].values()
+    )
+
+    community_cost = variables["community_cost"]
+
+    model.Params.MIPGap = 0
+    model.Params.MIPGapAbs = 1e-5
+
+    # ----- Stage 1: minimum IR violation -----
+    model.setObjective(total_slack, GRB.MINIMIZE)
+    model.optimize()
+
+    if model.Status != GRB.OPTIMAL:
+        raise RuntimeError(
+            "Stage 1 was not proven optimal. "
+            f"Status: {model.Status}"
+        )
+
+    min_violation = float(total_slack.getValue())
+
+    # ----- Stage 2: minimum community cost -----
+    model.addConstr(
+        total_slack <= min_violation + ir_tolerance,
+        name="lexicographic_ir_limit"
+    )
+
+    model.setObjective(community_cost, GRB.MINIMIZE)
+    model.optimize()
+
+    if model.SolCount == 0:
+        raise RuntimeError(
+            "No feasible Stage 2 solution found."
+        )
+
+    return {
+        "min_ir_violation_DKK": min_violation,
+        "final_ir_violation_DKK": float(
+            total_slack.getValue()
+        ),
+        "community_cost_DKK": float(
+            community_cost.getValue()
+        ),
+        "stage2_status": model.Status,
+        "stage2_gap": (
+            model.MIPGap if model.IsMIP else 0.0
+        ),
+    }
+"""
+def solve_lexicographic_ir(
+    model,
+    variables,
+    ir_tolerance=1e-4,
+    mip_gap=1e-5,
+    allow_provisional=True,
+):
+    """
+    Solve the relaxed-IR problem in two stages.
+
+    Stage 1:
+        Minimize the sum of IR slack variables.
+
+    Stage 2:
+        Minimize physical community cost, subject to
+        keeping total IR slack within ir_tolerance
+        of the best feasible Stage 1 solution.
+
+    If Stage 1 reaches its time limit, Stage 2 may
+    proceed provisionally when allow_provisional=True.
+
+    Returns solver statuses and certification flags.
+    """
+
+    if not variables["ir_slack"]:
+        raise ValueError(
+            "Lexicographic IR requires slack variables."
+        )
+
+    total_slack = gp.quicksum(
+        variables["ir_slack"].values()
+    )
+
+    community_cost = variables["community_cost"]
+
+    # --------------------------------------------
+    # Stage 1: minimize total IR violation
+    # --------------------------------------------
+    model.Params.MIPGap = 0
+    model.Params.MIPGapAbs = 1e-5
+
+    model.setObjective(total_slack, GRB.MINIMIZE)
+    model.optimize()
+
+    stage1_status = model.Status
+    stage1_runtime = model.Runtime
+
+    if model.SolCount == 0:
+        raise RuntimeError(
+            "Stage 1 found no feasible solution. "
+            f"Gurobi status: {stage1_status}"
+        )
+
+    stage1_best_slack = float(
+        total_slack.getValue()
+    )
+
+    stage1_best_bound = float(
+        model.ObjBound
+    )
+
+    stage1_gap = float(
+        model.MIPGap
+    )
+
+    stage1_certified = (
+        stage1_status == GRB.OPTIMAL
+    )
+
+    if not stage1_certified and not allow_provisional:
+        raise RuntimeError(
+            "Stage 1 was not proven optimal. "
+            f"Status: {stage1_status}"
+        )
+
+    print("\n--- Lexicographic Stage 1 ---")
+    print(
+        f"Best IR slack: "
+        f"{stage1_best_slack:.6f} DKK"
+    )
+    print(
+        f"Best lower bound: "
+        f"{stage1_best_bound:.6f} DKK"
+    )
+    print(
+        f"Stage 1 certified: {stage1_certified}"
+    )
+
+    # Preserve the best feasible Stage 1 solution
+    # as a MIP start for Stage 2.
+    stage1_start = {
+        var.VarName: var.X
+        for var in model.getVars()
+    }
+
+    # --------------------------------------------
+    # Stage 2: minimize community cost
+    # --------------------------------------------
+    slack_limit = (
+        stage1_best_slack + ir_tolerance
+    )
+
+    model.addConstr(
+        total_slack <= slack_limit,
+        name="lexicographic_ir_limit"
+    )
+
+    model.setObjective(
+        community_cost,
+        GRB.MINIMIZE
+    )
+
+    # Return to a relative MIP gap for Stage 2.
+    model.Params.MIPGap = mip_gap
+    model.Params.MIPGapAbs = 1e-5
+
+    model.update()
+
+    for var in model.getVars():
+        if var.VarName in stage1_start:
+            var.Start = stage1_start[var.VarName]
+
+    print("\n--- Lexicographic Stage 2 ---")
+    print(
+        f"IR slack limit: "
+        f"{slack_limit:.6f} DKK"
+    )
+
+    if stage1_certified:
+        print("Stage 1 minimum was certified.")
+    else:
+        print(
+            "PROVISIONAL: Stage 1 minimum "
+            "was not certified."
+        )
+
+    model.optimize()
+
+    stage2_status = model.Status
+    stage2_runtime = model.Runtime
+
+    if model.SolCount == 0:
+        raise RuntimeError(
+            "Stage 2 found no feasible solution. "
+            f"Gurobi status: {stage2_status}"
+        )
+
+    final_slack = float(
+        total_slack.getValue()
+    )
+
+    final_cost = float(
+        community_cost.getValue()
+    )
+
+    stage2_certified = (
+        stage2_status == GRB.OPTIMAL
+    )
+
+    print("\n--- Lexicographic Results ---")
+    print(
+        f"Stage 1 best IR slack: "
+        f"{stage1_best_slack:.6f} DKK"
+    )
+    print(
+        f"Stage 2 IR slack: "
+        f"{final_slack:.6f} DKK"
+    )
+    print(
+        f"Community cost: "
+        f"{final_cost:.6f} DKK"
+    )
+
+    print(
+        f"Stage 2 optimality gap: "
+        f"{model.MIPGap:.4%}"
+    )
+
+    print(
+        f"Fully certified lexicographic result: "
+        f"{stage1_certified and stage2_certified}"
+    )
+
+    return {
+        "min_ir_violation_DKK":
+            stage1_best_slack,
+
+        "stage1_best_slack_DKK":
+            stage1_best_slack,
+
+        "stage1_best_bound_DKK":
+            stage1_best_bound,
+
+        "stage1_status":
+            stage1_status,
+
+        "stage1_gap":
+            stage1_gap,
+
+        "stage1_runtime_s":
+            stage1_runtime,
+
+        "stage1_certified":
+            stage1_certified,
+
+        "ir_slack_limit_DKK":
+            slack_limit,
+
+        "final_ir_violation_DKK":
+            final_slack,
+
+        "community_cost_DKK":
+            final_cost,
+
+        "stage2_status":
+            stage2_status,
+
+        "stage2_gap":
+            float(model.MIPGap),
+
+        "stage2_runtime_s":
+            stage2_runtime,
+
+        "stage2_certified":
+            stage2_certified,
+
+        "fully_certified":
+            stage1_certified and stage2_certified,
+
+        "provisional":
+            not stage1_certified,
+    }
+
+
+def diagnose_infeasibility(model, output_path):
+    """
+    Export a Gurobi IIS for an infeasible model.
+    """
+    if model.Status == GRB.INF_OR_UNBD:
+        model.Params.DualReductions = 0
+        model.optimize()
+
+    if model.Status != GRB.INFEASIBLE:
+        print(
+            "IIS unavailable: model status is",
+            model.Status
+        )
+        return
+
+    model.computeIIS()
+    model.write(str(output_path))
+
+    print("IIS saved to:", output_path)
+
+    print("\nConstraints belonging to the IIS:")
+    for constr in model.getConstrs():
+        if constr.IISConstr:
+            print(" ", constr.ConstrName)
+
+    print("\nIndicator constraints belonging to IIS:")
+    for constr in model.getGenConstrs():
+        if constr.IISGenConstr:
+            print(" ", constr.GenConstrName)
+
+
+
+def community_metrics(result, community, objective_C=None):
+    import numpy as np
+
+    imp = result.import_kWh
+    exp = result.export_kWh
+
+    cap = np.asarray(
+        community.contract.capacity_limit_kW,
+        dtype=float
+    )
+
+    exceedance = np.maximum(imp - cap, 0.0)
+
+    metrics = {
+        "community_cost_DKK": result.objective_DKK,
+        "grid_cost_DKK": result.grid_cost_DKK,
+        "total_import_kWh": float(np.sum(imp)),
+        "total_export_kWh": float(np.sum(exp)),
+        "peak_import_kW": float(np.max(imp)),
+        "cap_exceedance_kWh": float(np.sum(exceedance)),
+        "hours_above_cap": int(
+            np.count_nonzero(exceedance > 1e-6)
+        ),
+        "budget_residual_DKK": (
+            sum(result.payments_DKK.values())
+            - result.grid_cost_DKK
+        ),
+        "total_ir_violation_DKK": sum(
+            result.ir_slacks_DKK.values()
+        ),
+    }
+
+    if objective_C is not None:
+        metrics["efficiency_loss_DKK"] = (
+            result.objective_DKK - objective_C
+        )
+
+    return metrics
+
+
+
+def validate_payments(result, tolerance=1e-4):
+    """Verify strong-duality payments against x_t * q_i,t."""
+    errors = {}
+
+    for i, quantities in result.net_by_member_kWh.items():
+        direct = float(np.dot(
+            result.prices_DKK_per_kWh, quantities
+        ))
+
+        dual = result.payments_DKK[i]
+        errors[i] = abs(direct - dual)
+
+    max_error = max(errors.values(), default=0.0)
+
+    if max_error > tolerance:
+        raise ValueError(
+            f"Payment validation failed: {max_error:.6g} DKK"
+        )
+
+    return max_error
+
+
+def individual_ir_metrics(result, benchmark_R, benchmark_I):
+    """Calculate actual IR violations for every DP variant."""
+    violations = {}
+    benefits = {}
+
+    for i, cost in result.member_costs_DKK.items():
+        outside_option = min(
+            benchmark_R[i],
+            benchmark_I[i]
+        )
+
+        benefits[i] = outside_option - cost
+        violations[i] = max(0.0, cost - outside_option)
+
+    return {
+        "benefits_by_member_DKK": benefits,
+        "violations_by_member_DKK": violations,
+        "total_ir_violation_DKK": sum(violations.values()),
+        "number_violating_ir": sum(
+            v > 1e-5 for v in violations.values()
+        ),
+    }
