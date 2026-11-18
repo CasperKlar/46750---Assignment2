@@ -26,3 +26,5 @@ SENSITIVITY_Q1_BETA_PAIR = ("Q1_S_beta_0.75", "Q1_S_beta_1.0")   # (a, b) -> plo
 
 #Q3 
 SEED_IN, SEED_OUT = 1, 2 # two different seeds, so the in-sample and out-of-sample sets are independent.
+CVAR_WEIGHT = 0.5
+CVAR_ALPHA = 0.2

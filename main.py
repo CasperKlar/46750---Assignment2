@@ -18,7 +18,7 @@ import argparse
 from pathlib import Path
 from gurobipy import GRB
 
-from src.config import SENSITIVITY_Q1_BETA, SENSITIVITY_Q1, SENSITIVITY_Q1_BETA_PAIR, SEED_IN, SEED_OUT
+from src.config import SENSITIVITY_Q1_BETA, SENSITIVITY_Q1, SENSITIVITY_Q1_BETA_PAIR, SEED_IN, SEED_OUT, CVAR_WEIGHT, CVAR_ALPHA
 from src.data_loader import load_community, list_communities
 from src.Q1_models import ModelI, ModelR, ModelC
 from src.Q1_results import (collect_model_results, plot_hourly_imports_exports, plot_imports_vs_capacity,
@@ -33,8 +33,8 @@ from src.Q2_models import (
     validate_payments,
     individual_ir_metrics,
 )
-from src.Q3_models import make_scenarios
-from src.Q3_results import check_scenarios, check_daily_minimum, check_indices, evaluate_prices, summarize  
+from src.Q3_models import make_scenarios, build_stochastic_pricing_problem
+from src.Q3_results import check_scenarios, check_daily_minimum, check_indices, evaluate_prices, summarize, extract_stochastic_result  
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 
@@ -75,7 +75,6 @@ def solve_q1_benchmarks(com):
     objective_C = models["C"].m.ObjVal
 
     return benchmark_R, benchmark_I, objective_C, costs
-
 
 def run_all_q2_scenarios(com, save_dir):
     """
@@ -529,23 +528,24 @@ def run_all_q2_scenarios(com, save_dir):
 
     return comparison
 
-
-
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--community", default="base", help=f"base (shipped) or your own params_community_<name>.json; available: {list_communities()}")
     ap.add_argument("--day", default="d1", help="d1 (base case) ... d7")
     ap.add_argument("--members", action="store_true", help="print the Assignment 1 summary of every member")
     ap.add_argument("--demo", action="store_true", help="run the scenario-generation demonstration")
-    #adds our models I,R,C:
     ap.add_argument("--Q1", action="store_true",help="Run all Question 1 models (I, R, C)")
     ap.add_argument("--Q2",choices=["DP0", "DPBB", "DPBBIR"],help="Run Question 2 pricing model")        
     ap.add_argument("--ir-mode",choices=["hard", "lexicographic"],default="hard",help="Individual-rationality treatment for DPBBIR")
     ap.add_argument("--Q2-all",action="store_true",help="Run all Q2 variants and compare results")
     ap.add_argument("--Q2-sensitivity",action="store_true",help="Run the Q2 contract-parameter sensitivity study") 
-    ap.add_argument("--Q3", choices=["scenarios", "evaluate_ev"],
+    ap.add_argument("--Q3", choices=["scenarios", "evaluate_ev", "sdp"],
                 help="Question 3 step: 'scenarios' = generate and check scenarios; "
-                     "'evaluate_ev' = evaluate the Q2 prices on the scenario sets")
+                     "'evaluate_ev' = evaluate the Q2 prices on the scenario sets; "
+                     "'sdp' = evaluate the stochastic models "
+                     )
+    ap.add_argument("--N", type=int, default=5, choices=[5, 10], help="number of in-sample scenarios")
+    ap.add_argument("--req", choices=["none", "BB", "BBIR"], default="BB", help="requirements in expectation")
     args = ap.parse_args()
 
     com = load_community(args.community, day=args.day)
@@ -777,7 +777,41 @@ def main() -> None:
 
             pd.DataFrame(summaries).T.to_csv(save_dir / "ev_eval_summary.csv")
             print(f"\nSaved to {save_dir}")
+    
+    if args.Q3 == "sdp":
 
+        print(f"\n--- Q3 step 2: SDP (req={args.req} ---")
+        save_dir = RESULTS_DIR / "Q3" / args.community / args.day
+        with open(save_dir / "scenarios.pkl", "rb") as f:
+            S = pickle.load(f)
+        scen = S[f"in{args.N}"]
+
+        bR, bI, _, _ = solve_q1_benchmarks(com)          # outside options (theta = 1)
+
+        model, v = build_stochastic_pricing_problem(
+            com, scen, requirements=args.req,
+            cvar_weight=CVAR_WEIGHT, cvar_alpha=CVAR_ALPHA,
+            benchmark_R=bR, benchmark_I=bI, ir_soft=(args.req == "BBIR"))
+        model.Params.MIPGap = 1e-2
+        model.Params.LogFile = str(save_dir / f"sdp_N{args.N}_{args.req}_w{CVAR_WEIGHT}.log")
+        model.optimize()
+
+        if model.SolCount > 0:
+            r = extract_stochastic_result(model, v)
+            tag = f"Q3_N{args.N}_w{CVAR_WEIGHT}_a{CVAR_ALPHA}"
+            pd.DataFrame({"hour": range(24), "price_DKK_per_kWh": r["prices"]}).to_csv(
+                save_dir / f"sdp_prices_{tag}.csv", index=False)
+            pd.DataFrame({"scenario": range(len(scen)), "cost": r["cost_s"], "budget": r["budget_s"],
+                          "cap_exceedance_kWh": r["exceedance_s"]}).to_csv(
+                save_dir / f"sdp_scenarios_{tag}.csv", index=False)
+            print(f"status {model.Status}, gap {model.MIPGap:.4%}, runtime {model.Runtime:.1f}s")
+            print(f"in-sample E[C] {r['expected_cost']:.2f}, CVaR {r['cvar_cost']:.2f} DKK")
+            print("cost per scenario:", np.round(r["cost_s"], 2))
+            print("budget per scenario:", np.round(r["budget_s"], 3))
+            print("exceedance per scenario [kWh]:", np.round(r["exceedance_s"], 3))
+            print("prices:", np.round(r["prices"], 3))
+        else:
+            print("No feasible solution. Gurobi status:", model.Status)
    
     # The model constructors and execution calls will go here
     # once their interfaces are implemented.
@@ -791,3 +825,4 @@ if __name__ == "__main__":
 # Run Q1: python main.py --community base --day d1 --Q1 
 # Run Q2: python main.py --community base --day d1 --Q2 DP0
 # Run Q3: python main.py --community base --day d1 --Q3 scenarios
+#python main.py --community base --day d1 --Q3 sdp --N 5 --req BB 

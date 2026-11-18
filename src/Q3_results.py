@@ -3,7 +3,7 @@ import pandas as pd
 from src import scenario_generation as sg
 from src.Q2_models import (build_pricing_problem, extract_pricing_result,
                            community_metrics, individual_ir_metrics) 
-from src.Q3_models import scenario_community 
+from src.Q3_models import scenario_community, cvar_of 
 
 
 
@@ -165,7 +165,6 @@ def evaluate_prices(com, x, scenarios, benchmark_R, benchmark_I, tol=1e-4):
 
     return pd.DataFrame(rows)
 
-
 def summarize(df):
     """Summarize the output of evaluate_prices over a scenario set.
 
@@ -194,3 +193,39 @@ def summarize(df):
         # cost
         "mean community cost [DKK]": df["community_cost"].mean(),
     }
+
+
+def extract_stochastic_result(model, v):
+    """Extract prices and per-scenario results after optimize() found a feasible solution.
+
+    Returns:
+        dict with
+            prices            posted prices x [DKK/kWh], shape (24,)
+            objective         value of the minimized objective [DKK]
+            expected_cost     E[C_s] [DKK]
+            cvar_cost         CVaR_alpha of C_s [DKK] (computed from the scenario costs)
+            cost_s            C_s per scenario [DKK]
+            grid_cost_s       grid cost per scenario [DKK]
+            budget_s          B_s per scenario [DKK] (payments - grid cost)
+            exceedance_s      cap exceedance per scenario [kWh]
+            import_s          community import per scenario, shape (S, 24) [kWh]
+            member_cost_s     list over scenarios of {member: D_{i,s}} [DKK]
+            ir_slacks         {member: slack [DKK]} (empty if hard IR / no IR)
+    """
+    if model.SolCount == 0:
+        raise RuntimeError(f'No solution found. Gurobi status: {model.Status}')
+    S, hours, IDs = v['S'], v['hours'], v['ids']
+    cost_s = np.array([v['cost'][s].getValue() for s in range(S)])
+    return dict(
+        prices=np.array([v['x'][t].X for t in hours]),
+        objective=model.ObjVal,
+        expected_cost=float(v['expected_cost'].getValue()),
+        cvar_cost=cvar_of(cost_s, v['pi'], v['cvar_alpha']),
+        cost_s=cost_s,
+        grid_cost_s=np.array([v['grid_cost'][s].getValue() for s in range(S)]),
+        budget_s=np.array([v['budget'][s].getValue() for s in range(S)]),
+        exceedance_s=np.array([sum(v['P_exc'][s][t].X for t in hours) for s in range(S)]),
+        import_s=np.array([[v['P_imp'][s][t].X for t in hours] for s in range(S)]),
+        member_cost_s=[{i: v['dual_cost'][s][i].getValue() for i in IDs} for s in range(S)],
+        ir_slacks={i: v['ir_slack'][i].X for i in v['ir_slack']},
+    )
