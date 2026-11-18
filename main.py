@@ -200,7 +200,7 @@ def run_all_q2_scenarios(com, save_dir):
         lex_info = None
         lex_completed = True
         lex_error = None
-
+        """
         try:
             if ir_soft:
                 lex_info = solve_lexicographic_ir(
@@ -250,9 +250,81 @@ def run_all_q2_scenarios(com, save_dir):
                 f"{model.ObjBound:.3f} DKK"
             )
 
+        """
+
+        try:
+            if ir_soft:
+                lex_info = solve_lexicographic_ir(
+                    model,
+                    variables,
+                    ir_tolerance=1e-4,
+                    mip_gap=1e-5,
+                    allow_provisional=True,
+                )
+            else:
+                model.optimize()
+
+        except RuntimeError as exc:
+            lex_completed = False
+            lex_error = str(exc)
+
+            print(
+                f"{label}: optimization incomplete: "
+                f"{exc}"
+            )
+
+        row["Lexicographic completed"] = (
+            lex_completed if ir_soft else None
+        )
+        row["Solver message"] = lex_error
+
+        if lex_info is not None:
+
+            row["Stage 1 certified"] = (
+                lex_info["stage1_certified"]
+            )
+
+            row["Stage 1 best IR slack (DKK)"] = (
+                lex_info["stage1_best_slack_DKK"]
+            )
+
+            row["Stage 1 best bound (DKK)"] = (
+                lex_info["stage1_best_bound_DKK"]
+            )
+
+            row["Stage 2 certified"] = (
+                lex_info["stage2_certified"]
+            )
+
+            row["Provisional"] = (
+                lex_info["provisional"]
+            )
+
+            row["Stage 1 runtime (s)"] = (
+                lex_info["stage1_runtime_s"]
+            )
+
+            row["Stage 2 runtime (s)"] = (
+                lex_info["stage2_runtime_s"]
+            )
+
+        elif ir_soft and model.SolCount > 0:
+            # Diagnostic incumbent only.
+            # Not a completed Stage 2 result.
+            row["Incomplete stage incumbent objective"] = (
+                model.ObjVal
+            )
+
 
         row["Status"] = model.Status
-        row["Runtime (s)"] = model.Runtime
+
+        if lex_info is not None:
+            row["Runtime (s)"] = (
+                lex_info["stage1_runtime_s"]
+                + lex_info["stage2_runtime_s"]
+            )
+        else:
+            row["Runtime (s)"] = model.Runtime
 
         # Check numerical quality of the best solution.
         if model.SolCount > 0:
@@ -306,9 +378,11 @@ def run_all_q2_scenarios(com, save_dir):
             # -----------------------------------
             row.update({
                 "Feasible solution": True,
+
                 "Proven optimal": (
-                    model.Status == GRB.OPTIMAL
-                    and (not ir_soft or lex_info is not None)
+                    lex_info["fully_certified"]
+                    if ir_soft
+                    else model.Status == GRB.OPTIMAL
                 ),
                 "Community cost (DKK)":
                     result.objective_DKK,
@@ -335,8 +409,16 @@ def run_all_q2_scenarios(com, save_dir):
             })
 
             if lex_info is not None:
-                row["Minimum IR slack (DKK)"] = (
-                    lex_info["min_ir_violation_DKK"]
+                row["Stage 1 best IR slack (DKK)"] = (
+                    lex_info["stage1_best_slack_DKK"]
+                )
+
+                row["Stage 2 IR slack (DKK)"] = (
+                    lex_info["final_ir_violation_DKK"]
+                )
+
+                row["IR slack limit (DKK)"] = (
+                    lex_info["ir_slack_limit_DKK"]
                 )
 
             # -----------------------------------

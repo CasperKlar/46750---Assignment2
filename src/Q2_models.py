@@ -360,23 +360,23 @@ if __name__ == '__main__':
         print('Internal prices [DKK/kWh]:', np.round(result.prices_DKK_per_kWh, 3))
         print('Grid cost [DKK]:', round(result.grid_cost_DKK, 2))
 
-
+"""
 def solve_lexicographic_ir(
     model,
     variables,
     ir_tolerance=1e-5,
     mip_gap=1e-5,
 ):
-    """
-    Solve the relaxed IR model lexicographically.
 
-    Stage 1:
-        Minimize total IR violation.
+#    Solve the relaxed IR model lexicographically.
 
-    Stage 2:
-        Minimize community cost while preserving
-        the Stage 1 minimum IR violation.
-    """
+#    Stage 1:
+#        Minimize total IR violation.
+
+#    Stage 2:
+#        Minimize community cost while preserving
+#        the Stage 1 minimum IR violation.
+
     if not variables["ir_slack"]:
         raise ValueError("Model has no IR slack variables.")
 
@@ -428,7 +428,239 @@ def solve_lexicographic_ir(
             model.MIPGap if model.IsMIP else 0.0
         ),
     }
+"""
+def solve_lexicographic_ir(
+    model,
+    variables,
+    ir_tolerance=1e-4,
+    mip_gap=1e-5,
+    allow_provisional=True,
+):
+    """
+    Solve the relaxed-IR problem in two stages.
 
+    Stage 1:
+        Minimize the sum of IR slack variables.
+
+    Stage 2:
+        Minimize physical community cost, subject to
+        keeping total IR slack within ir_tolerance
+        of the best feasible Stage 1 solution.
+
+    If Stage 1 reaches its time limit, Stage 2 may
+    proceed provisionally when allow_provisional=True.
+
+    Returns solver statuses and certification flags.
+    """
+
+    if not variables["ir_slack"]:
+        raise ValueError(
+            "Lexicographic IR requires slack variables."
+        )
+
+    total_slack = gp.quicksum(
+        variables["ir_slack"].values()
+    )
+
+    community_cost = variables["community_cost"]
+
+    # --------------------------------------------
+    # Stage 1: minimize total IR violation
+    # --------------------------------------------
+    model.Params.MIPGap = 0
+    model.Params.MIPGapAbs = 1e-5
+
+    model.setObjective(total_slack, GRB.MINIMIZE)
+    model.optimize()
+
+    stage1_status = model.Status
+    stage1_runtime = model.Runtime
+
+    if model.SolCount == 0:
+        raise RuntimeError(
+            "Stage 1 found no feasible solution. "
+            f"Gurobi status: {stage1_status}"
+        )
+
+    stage1_best_slack = float(
+        total_slack.getValue()
+    )
+
+    stage1_best_bound = float(
+        model.ObjBound
+    )
+
+    stage1_gap = float(
+        model.MIPGap
+    )
+
+    stage1_certified = (
+        stage1_status == GRB.OPTIMAL
+    )
+
+    if not stage1_certified and not allow_provisional:
+        raise RuntimeError(
+            "Stage 1 was not proven optimal. "
+            f"Status: {stage1_status}"
+        )
+
+    print("\n--- Lexicographic Stage 1 ---")
+    print(
+        f"Best IR slack: "
+        f"{stage1_best_slack:.6f} DKK"
+    )
+    print(
+        f"Best lower bound: "
+        f"{stage1_best_bound:.6f} DKK"
+    )
+    print(
+        f"Stage 1 certified: {stage1_certified}"
+    )
+
+    # Preserve the best feasible Stage 1 solution
+    # as a MIP start for Stage 2.
+    stage1_start = {
+        var.VarName: var.X
+        for var in model.getVars()
+    }
+
+    # --------------------------------------------
+    # Stage 2: minimize community cost
+    # --------------------------------------------
+    slack_limit = (
+        stage1_best_slack + ir_tolerance
+    )
+
+    model.addConstr(
+        total_slack <= slack_limit,
+        name="lexicographic_ir_limit"
+    )
+
+    model.setObjective(
+        community_cost,
+        GRB.MINIMIZE
+    )
+
+    # Return to a relative MIP gap for Stage 2.
+    model.Params.MIPGap = mip_gap
+    model.Params.MIPGapAbs = 1e-5
+
+    model.update()
+
+    for var in model.getVars():
+        if var.VarName in stage1_start:
+            var.Start = stage1_start[var.VarName]
+
+    print("\n--- Lexicographic Stage 2 ---")
+    print(
+        f"IR slack limit: "
+        f"{slack_limit:.6f} DKK"
+    )
+
+    if stage1_certified:
+        print("Stage 1 minimum was certified.")
+    else:
+        print(
+            "PROVISIONAL: Stage 1 minimum "
+            "was not certified."
+        )
+
+    model.optimize()
+
+    stage2_status = model.Status
+    stage2_runtime = model.Runtime
+
+    if model.SolCount == 0:
+        raise RuntimeError(
+            "Stage 2 found no feasible solution. "
+            f"Gurobi status: {stage2_status}"
+        )
+
+    final_slack = float(
+        total_slack.getValue()
+    )
+
+    final_cost = float(
+        community_cost.getValue()
+    )
+
+    stage2_certified = (
+        stage2_status == GRB.OPTIMAL
+    )
+
+    print("\n--- Lexicographic Results ---")
+    print(
+        f"Stage 1 best IR slack: "
+        f"{stage1_best_slack:.6f} DKK"
+    )
+    print(
+        f"Stage 2 IR slack: "
+        f"{final_slack:.6f} DKK"
+    )
+    print(
+        f"Community cost: "
+        f"{final_cost:.6f} DKK"
+    )
+
+    print(
+        f"Stage 2 optimality gap: "
+        f"{model.MIPGap:.4%}"
+    )
+
+    print(
+        f"Fully certified lexicographic result: "
+        f"{stage1_certified and stage2_certified}"
+    )
+
+    return {
+        "min_ir_violation_DKK":
+            stage1_best_slack,
+
+        "stage1_best_slack_DKK":
+            stage1_best_slack,
+
+        "stage1_best_bound_DKK":
+            stage1_best_bound,
+
+        "stage1_status":
+            stage1_status,
+
+        "stage1_gap":
+            stage1_gap,
+
+        "stage1_runtime_s":
+            stage1_runtime,
+
+        "stage1_certified":
+            stage1_certified,
+
+        "ir_slack_limit_DKK":
+            slack_limit,
+
+        "final_ir_violation_DKK":
+            final_slack,
+
+        "community_cost_DKK":
+            final_cost,
+
+        "stage2_status":
+            stage2_status,
+
+        "stage2_gap":
+            float(model.MIPGap),
+
+        "stage2_runtime_s":
+            stage2_runtime,
+
+        "stage2_certified":
+            stage2_certified,
+
+        "fully_certified":
+            stage1_certified and stage2_certified,
+
+        "provisional":
+            not stage1_certified,
+    }
 
 
 def diagnose_infeasibility(model, output_path):
