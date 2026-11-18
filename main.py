@@ -545,7 +545,7 @@ def main() -> None:
                      "'sdp' = evaluate the stochastic models "
                      )
     ap.add_argument("--N", type=int, default=5, choices=[5, 10], help="number of in-sample scenarios")
-    ap.add_argument("--req", choices=["none", "BB", "BBIR"], default="BB", help="requirements in expectation")
+    ap.add_argument("--req", choices=["none", "BB", "BBIR"], default="none", help="requirements in expectation")
     args = ap.parse_args()
 
     com = load_community(args.community, day=args.day)
@@ -791,7 +791,8 @@ def main() -> None:
         model, v = build_stochastic_pricing_problem(
             com, scen, requirements=args.req,
             cvar_weight=CVAR_WEIGHT, cvar_alpha=CVAR_ALPHA,
-            benchmark_R=bR, benchmark_I=bI, ir_soft=(args.req == "BBIR"))
+            benchmark_R=bR, benchmark_I=bI)
+        model.Params.TimeLimit = 600
         model.Params.MIPGap = 1e-2
         model.Params.LogFile = str(save_dir / f"sdp_N{args.N}_{args.req}_w{CVAR_WEIGHT}.log")
         model.optimize()
