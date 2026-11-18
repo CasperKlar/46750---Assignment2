@@ -539,10 +539,11 @@ def main() -> None:
     ap.add_argument("--ir-mode",choices=["hard", "lexicographic"],default="hard",help="Individual-rationality treatment for DPBBIR")
     ap.add_argument("--Q2-all",action="store_true",help="Run all Q2 variants and compare results")
     ap.add_argument("--Q2-sensitivity",action="store_true",help="Run the Q2 contract-parameter sensitivity study") 
-    ap.add_argument("--Q3", choices=["scenarios", "evaluate_ev", "sdp"],
+    ap.add_argument("--Q3", choices=["scenarios", "evaluate_ev", "sdp_cvar", "sdp_cc"],
                 help="Question 3 step: 'scenarios' = generate and check scenarios; "
                      "'evaluate_ev' = evaluate the Q2 prices on the scenario sets; "
-                     "'sdp' = evaluate the stochastic models "
+                     "'sdp_cvar' = evaluate the stochastic models "
+                     "'sdp_cc' = evaluate the stochastic models "
                      )
     ap.add_argument("--N", type=int, default=5, choices=[5, 10], help="number of in-sample scenarios")
     ap.add_argument("--req", choices=["none", "BB", "BBIR"], default="none", help="requirements in expectation")
@@ -778,7 +779,7 @@ def main() -> None:
             pd.DataFrame(summaries).T.to_csv(save_dir / "ev_eval_summary.csv")
             print(f"\nSaved to {save_dir}")
     
-    if args.Q3 == "sdp":
+    if args.Q3 == "sdp_cvar":
 
         print(f"\n--- Q3 step 2: SDP (req={args.req} ---")
         save_dir = RESULTS_DIR / "Q3" / args.community / args.day
@@ -789,9 +790,9 @@ def main() -> None:
         bR, bI, _, _ = solve_q1_benchmarks(com)          # outside options (theta = 1)
 
         model, v = build_stochastic_pricing_problem(
-            com, scen, requirements=args.req,
+            com, scen, requirements="none",
             cvar_weight=CVAR_WEIGHT, cvar_alpha=CVAR_ALPHA,
-            benchmark_R=bR, benchmark_I=bI)
+            benchmark_R=bR, benchmark_I=bI, chance_epsilon=None)
         model.Params.TimeLimit = 600
         model.Params.MIPGap = 1e-2
         model.Params.LogFile = str(save_dir / f"sdp_N{args.N}_{args.req}_w{CVAR_WEIGHT}.log")
@@ -813,6 +814,42 @@ def main() -> None:
             print("prices:", np.round(r["prices"], 3))
         else:
             print("No feasible solution. Gurobi status:", model.Status)
+
+    
+    if args.Q3 == "sdp_cc":
+    
+            print(f"\n--- Q3 step 2: SDP (req={args.req} ---")
+            save_dir = RESULTS_DIR / "Q3" / args.community / args.day
+            with open(save_dir / "scenarios.pkl", "rb") as f:
+                S = pickle.load(f)
+            scen = S[f"in{args.N}"]
+    
+            bR, bI, _, _ = solve_q1_benchmarks(com)          # outside options (theta = 1)
+    
+            model, v = build_stochastic_pricing_problem(
+                com, scen, requirements='none',
+                benchmark_R=bR, benchmark_I=bI, chance_epsilon=0.1)
+            model.Params.TimeLimit = 600
+            model.Params.MIPGap = 1e-2
+            model.Params.LogFile = str(save_dir / f"Q3_N{args.N}_sdp_cc.log")
+            model.optimize()
+    
+            if model.SolCount > 0:
+                r = extract_stochastic_result(model, v)
+                tag = f"Q3_N{args.N}_sdp_cc"
+                pd.DataFrame({"hour": range(24), "price_DKK_per_kWh": r["prices"]}).to_csv(
+                    save_dir / f"sdp_prices_{tag}.csv", index=False)
+                pd.DataFrame({"scenario": range(len(scen)), "cost": r["cost_s"], "budget": r["budget_s"],
+                              "cap_exceedance_kWh": r["exceedance_s"]}).to_csv(
+                    save_dir / f"sdp_scenarios_{tag}.csv", index=False)
+                print(f"status {model.Status}, gap {model.MIPGap:.4%}, runtime {model.Runtime:.1f}s")
+                print(f"in-sample E[C] {r['expected_cost']:.2f}, CVaR {r['cvar_cost']:.2f} DKK")
+                print("cost per scenario:", np.round(r["cost_s"], 2))
+                print("budget per scenario:", np.round(r["budget_s"], 3))
+                print("exceedance per scenario [kWh]:", np.round(r["exceedance_s"], 3))
+                print("prices:", np.round(r["prices"], 3))
+            else:
+                print("No feasible solution. Gurobi status:", model.Status)
    
     # The model constructors and execution calls will go here
     # once their interfaces are implemented.
