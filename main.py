@@ -15,14 +15,17 @@ import argparse
 from pathlib import Path
 from gurobipy import GRB
 
+from src.config import SENSITIVITY_Q1_BETA, SENSITIVITY_Q1, SENSITIVITY_Q1_BETA_PAIR, SEED_IN, SEED_OUT
 from src.data_loader import load_community, list_communities
 from src.Q1_models import ModelI, ModelR, ModelC
 from src.Q1_results import (collect_model_results, plot_hourly_imports_exports, plot_imports_vs_capacity,
                             print_summary_table, plot_Q1_sensitivity_manual,
                             save_hourly_flows, plot_hourly_flow_difference, plot_duals,
                             member_costs, print_settlement_summary)
+
 from src.Q2_models import build_pricing_problem, extract_pricing_result
-from src.config import SENSITIVITY_Q1_BETA, SENSITIVITY_Q1, SENSITIVITY_Q1_BETA_PAIR
+from src.Q3_models import make_scenarios  
+from src.Q3_results import check_scenarios, check_daily_minimum, check_indices  
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 
@@ -36,6 +39,8 @@ def main() -> None:
     #adds our models I,R,C:
     ap.add_argument("--Q1", action="store_true",help="Run all Question 1 models (I, R, C)")
     ap.add_argument("--Q2",choices=["DP0", "DPBB", "DPBBIR"],help="Run Question 2 pricing model")
+    ap.add_argument("--Q3", choices=["scenarios"], help="Run Question 3 step: generate and check the scenarios")  
+        
     args = ap.parse_args()
 
     com = load_community(args.community, day=args.day)
@@ -62,10 +67,10 @@ def main() -> None:
 
 
         if SENSITIVITY_Q1:
-            save_dir = RESULTS_DIR / args.community / args.day / SENSITIVITY_Q1_BETA
+            save_dir = RESULTS_DIR/ "Q1" / args.community / args.day / SENSITIVITY_Q1_BETA
             save_dir.mkdir(parents=True, exist_ok=True)
         else:
-            save_dir = RESULTS_DIR / args.community / args.day 
+            save_dir = RESULTS_DIR/ "Q1" / args.community / args.day 
             save_dir.mkdir(parents=True, exist_ok=True)
 
         for name in ("R", "I", "C"):
@@ -142,6 +147,26 @@ def main() -> None:
             print(f"Model {args.Q2} found no feasible solution.")
             print(f"Gurobi status: {model.Status}")
 
+    #Q3
+    if args.Q3 == "scenarios":
+        print("\n--- Q3: generating and checking scenarios ---")
+        save_dir = RESULTS_DIR / "Q3" / args.community / args.day   
+        save_dir.mkdir(parents=True, exist_ok=True)          
+
+        #make scenarios
+        ins5, ins10, out100 = make_scenarios(save_dir, SEED_IN, SEED_OUT)  
+
+        for name, joint in [("in-sample 5", ins5), ("in-sample 10", ins10), ("out-of-sample 100", out100)]:
+            print(f"\nChecks for {name}:")                   
+            check_scenarios(joint)
+
+        for name, joint, seed in [("in-sample 5", ins5, SEED_IN),
+                          ("in-sample 10", ins10, SEED_IN),
+                          ("out-of-sample 100", out100, SEED_OUT)]:
+            print(f"\nChecks for {name}:")   
+            check_daily_minimum(joint, com)
+            check_indices(joint, com, seed)                           
+
    
     # The model constructors and execution calls will go here
     # once their interfaces are implemented.
@@ -154,3 +179,4 @@ if __name__ == "__main__":
 
 # Run Q1: python main.py --community base --day d1 --Q1 
 # Run Q2: python main.py --community base --day d1 --Q2 DP0
+# Run Q3: python main.py --community base --day d1 --Q3 scenarios

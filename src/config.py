@@ -23,3 +23,6 @@ MODEL_C_COLOR = "green"
 SENSITIVITY_Q1 = False
 SENSITIVITY_Q1_BETA = "Q1_S_beta_0.45" #this is only for naming results, manually changed in JSON file 
 SENSITIVITY_Q1_BETA_PAIR = ("Q1_S_beta_0.75", "Q1_S_beta_1.0")   # (a, b) -> plot shows b - a
+
+#Q3 
+SEED_IN, SEED_OUT = 1, 2 # two different seeds, so the in-sample and out-of-sample sets are independent.
