@@ -1,6 +1,11 @@
-import pickle, os                     
+import pickle  
+from dataclasses import replace
+import numpy as np
+import numpy as np
+
 from src.data_loader import load_community         
-from src import scenario_generation as sg          
+from src import scenario_generation as sg        
+
 
 def make_scenarios(save_dir,SEED_IN, SEED_OUT ):
     """Draw the in-sample and out-of-sample scenario sets of Question 3 and save them.
@@ -37,4 +42,48 @@ def make_scenarios(save_dir,SEED_IN, SEED_OUT ):
         pickle.dump({"in5": ins5, "in10": ins10, "out100": out100,
                      "seeds": {"in": SEED_IN, "out": SEED_OUT}}, f)
                                                    
-    return ins5, ins10, out100                    
+    return ins5, ins10, out100      
+
+def scenario_community(com, sc):
+    """Build the community as it looks in one uncertain scenario.
+
+    Four fields change per member: the reference load, the hourly lower and upper
+    load bounds (they follow the reference), and the minimum daily energy (it
+    equals the scenario's daily reference energy). Prices, tariffs, PV, battery,
+    disutility slopes and the DSO contract stay as in the base community. 
+
+    Args:
+        com: CommunityData, the base community (theta = 1), from load_community.
+        sc: dict, one joint scenario from sg.draw_preference_scenarios. Uses
+            sc["members"][consumer_id][appliance_id], the perturbed appliance
+            dicts of that scenario.
+
+    Returns:
+        CommunityData: a new community with the scenario's reference_load [kWh/h],
+        load_lower_kWh and load_upper_kWh [kWh/h] and min_daily_energy_kWh [kWh/day]
+        for every member.
+    """
+    new_members = []
+    for m in com.members:
+        # perturbed appliance dicts of this member in this scenario
+        apps = sc["members"][m.consumer_id]
+
+        # the member's flexible load; its ID starts with "FL_" (PV and battery do not)
+        load = next(a for k, a in apps.items() if k.startswith("FL_"))
+
+        # reference profile [kWh/h] = connection capacity x (already theta-scaled) capacity factor
+        ref = m.load_max_kWh * np.asarray(load["reference_load_capacity_factor"], dtype=float)
+
+        # maximum allowed hourly deviation from the reference [kWh]
+        D = m.max_hourly_deviation_kWh
+
+        new_members.append(replace(
+            m,                                                     # copy of the member, only the fields below change
+            reference_load=ref,                                    # new preferred profile
+            load_upper_kWh=np.minimum(m.load_max_kWh, ref + D),    # upper bound follows the new reference
+            load_lower_kWh=np.maximum(m.load_min_kWh, ref - D),    # lower bound follows the new reference
+            min_daily_energy_kWh=float(load["min_total_energy_per_day_kWh"]),  # scenario's daily reference energy
+        ))
+
+    # same community (prices, contract, ...) but with the scenario's members
+    return replace(com, members=new_members)

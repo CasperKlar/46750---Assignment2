@@ -1,5 +1,11 @@
 import numpy as np
+import pandas as pd
 from src import scenario_generation as sg
+from src.Q2_models import (build_pricing_problem, extract_pricing_result,
+                           community_metrics, individual_ir_metrics) 
+from src.Q3_models import scenario_community 
+
+
 
 def check_scenarios(joint, lo=0.8, hi=1.2):
     """Check the drawn theta values and the scenario probabilities.
@@ -23,10 +29,6 @@ def check_scenarios(joint, lo=0.8, hi=1.2):
     print("mean of theta:", round(thetas.mean(), 3), "(target 1)")             # roughly 1 (very close for 100)
     print("probabilities sum to 1:", np.isclose(probs.sum(), 1.0))             # must be True
     return thetas
-
-import numpy as np
-from src import scenario_generation as sg
-
 
 def check_daily_minimum(joint, com):
     """Check that every scenario's daily minimum energy equals its reference energy.
@@ -60,7 +62,6 @@ def check_daily_minimum(joint, com):
     print("daily minimum equals reference energy in every scenario:", ok)
     return ok
 
-
 def check_indices(joint, com, seed):
     """Check that the stored indices recover the draws of theta.
 
@@ -91,3 +92,105 @@ def check_indices(joint, com, seed):
                 print("INDEX MISMATCH scenario", sc["id"], cid)
     print("indices recover the draws:", ok)
     return ok
+
+def evaluate_prices(com, x, scenarios, benchmark_R, benchmark_I, tol=1e-4):
+    """Evaluate a fixed price vector with the Q2 pricing model DP on a set of scenarios.
+
+    Per scenario:
+      1. Build the scenario community (scenario_community).
+      2. Solve the Q2 pricing model with the price fixed (price_lower = price_upper = x).
+         Only the members' responses remain free. Among equally good member
+         responses, the solver picks the one with the lowest manager cost, which
+         is the optimistic assumption of Question 2.
+      3. Compute the budget residual, the cap exceedance and the IR violations
+         against the outside options.
+
+    Args:
+        com: CommunityData, the base community (theta = 1).
+        x: array-like, shape (24,), posted internal prices [DKK/kWh].
+        scenarios: list of joint scenarios (dicts), e.g. the in-sample or
+            out-of-sample set from make_scenarios.
+        benchmark_R: dict {member_id: cost [DKK]}, cost without contract (Q1).
+        benchmark_I: dict {member_id: cost [DKK]}, cost with an individual
+            contract (Q1). A member's outside option is min(benchmark_R,
+            benchmark_I). The same values are used in every scenario (computed
+            once at theta = 1, as in Q2).
+        tol: float, [DKK]. A budget residual below -tol counts as a violation,
+            which absorbs solver round-off.
+
+    Returns:
+        pd.DataFrame: one row per scenario with columns
+            scenario              scenario id
+            community_cost        grid cost + members' physical cost [DKK]
+            budget_residual       payments collected - grid cost [DKK] (negative = deficit)
+            deficit               max(0, -budget_residual) [DKK]
+            cap_exceedance_kWh    total import above the cap over the day [kWh]
+            hours_above_cap       number of hours with import above the cap
+            n_ir_violations       number of members worse off than their outside option
+            total_ir_violation    sum of the members' IR violations [DKK]
+            budget_violated       True if the deficit is larger than tol
+    """
+    x = np.asarray(x, dtype=float)
+    rows = []
+
+    for sc in scenarios:
+        # community with this scenario's profiles, bounds and daily minima
+        c = scenario_community(com, sc)
+
+        # Q2 pricing model with the price fixed: lower bound = upper bound = x,
+        # so the manager cannot change the price and only member responses are solved
+        model, v = build_pricing_problem(c, variant="DP0",
+                                         price_lower=x, price_upper=x)
+        model.Params.OutputFlag = 0      # silent solver
+        model.Params.TimeLimit = 60      # seconds per scenario
+        model.Params.MIPGap = 1e-6       # tight gap, so ties are resolved reliably
+        model.optimize()
+
+        # extract flows, payments and member costs from the solved model
+        res = extract_pricing_result(model, v)
+        met = community_metrics(res, c)                            # budget, cap exceedance, ...
+        ir = individual_ir_metrics(res, benchmark_R, benchmark_I)  # benefit and IR violation per member
+
+        rows.append({
+            "scenario": sc["id"],
+            "community_cost": res.objective_DKK,
+            "budget_residual": met["budget_residual_DKK"],         # payments - grid cost
+            "deficit": max(0.0, -met["budget_residual_DKK"]),      # only the negative part
+            "cap_exceedance_kWh": met["cap_exceedance_kWh"],
+            "hours_above_cap": met["hours_above_cap"],
+            "n_ir_violations": ir["number_violating_ir"],
+            "total_ir_violation": ir["total_ir_violation_DKK"],
+            "budget_violated": met["budget_residual_DKK"] < -tol,  # deficit beyond round-off
+        })
+
+    return pd.DataFrame(rows)
+
+
+def summarize(df):
+    """Summarize the output of evaluate_prices over a scenario set.
+
+    Args:
+        df: pd.DataFrame returned by evaluate_prices.
+
+    Returns:
+        dict: frequency and magnitude of the three requirement violations.
+    """
+    return {
+        # budget: residual = payments collected - grid cost (positive = surplus, negative = deficit)
+        "mean budget residual [DKK]": df["budget_residual"].mean(),
+        "min budget residual [DKK]": df["budget_residual"].min(),
+        "max budget residual [DKK]": df["budget_residual"].max(),
+        "P(budget surplus)": (df["budget_residual"] > 1e-4).mean(),
+        "P(budget deficit)": df["budget_violated"].mean(),
+        "mean deficit [DKK]": df["deficit"].mean(),
+        "max deficit [DKK]": df["deficit"].max(),
+        # cap
+        "mean cap exceedance [kWh]": df["cap_exceedance_kWh"].mean(),
+        "mean hours above cap": df["hours_above_cap"].mean(),
+        # individual rationality
+        "P(at least one IR violation)": (df["n_ir_violations"] > 0).mean(),
+        "mean members violating IR": df["n_ir_violations"].mean(),
+        "mean total IR violation [DKK]": df["total_ir_violation"].mean(),
+        # cost
+        "mean community cost [DKK]": df["community_cost"].mean(),
+    }

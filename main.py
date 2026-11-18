@@ -13,8 +13,7 @@ models of the assignment (R, I, C, DP, ...) on top of it, one function per exper
 from __future__ import annotations
 import pandas as pd
 import numpy as np
-
-
+import pickle
 import argparse
 from pathlib import Path
 from gurobipy import GRB
@@ -34,8 +33,8 @@ from src.Q2_models import (
     validate_payments,
     individual_ir_metrics,
 )
-from src.Q3_models import make_scenarios  
-from src.Q3_results import check_scenarios, check_daily_minimum, check_indices  
+from src.Q3_models import make_scenarios
+from src.Q3_results import check_scenarios, check_daily_minimum, check_indices, evaluate_prices, summarize  
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 
@@ -543,8 +542,10 @@ def main() -> None:
     ap.add_argument("--Q2",choices=["DP0", "DPBB", "DPBBIR"],help="Run Question 2 pricing model")        
     ap.add_argument("--ir-mode",choices=["hard", "lexicographic"],default="hard",help="Individual-rationality treatment for DPBBIR")
     ap.add_argument("--Q2-all",action="store_true",help="Run all Q2 variants and compare results")
-    ap.add_argument("--Q2-sensitivity",action="store_true",help="Run the Q2 contract-parameter sensitivity study")
-    ap.add_argument("--Q3", choices=["scenarios"], help="Run Question 3 step: generate and check the scenarios")  
+    ap.add_argument("--Q2-sensitivity",action="store_true",help="Run the Q2 contract-parameter sensitivity study") 
+    ap.add_argument("--Q3", choices=["scenarios", "evaluate_ev"],
+                help="Question 3 step: 'scenarios' = generate and check scenarios; "
+                     "'evaluate_ev' = evaluate the Q2 prices on the scenario sets")
     args = ap.parse_args()
 
     com = load_community(args.community, day=args.day)
@@ -747,7 +748,35 @@ def main() -> None:
                           ("out-of-sample 100", out100, SEED_OUT)]:
             print(f"\nChecks for {name}:")   
             check_daily_minimum(joint, com)
-            check_indices(joint, com, seed)                           
+            check_indices(joint, com, seed)      
+
+    if args.Q3 == "evaluate_ev":
+            print("\n--- Q3 step 1: test the DP0 prices on the scenarios ---")
+            q2_dir = RESULTS_DIR / args.community / args.day / "Q2"
+            save_dir = RESULTS_DIR / "Q3" / args.community / args.day
+
+            # The posted prices from Q2, model DP0 (baseline DP)
+            x_ev = pd.read_csv(q2_dir / "DP0" / "hourly_results.csv")["price_DKK_per_kWh"].to_numpy()
+
+            # The scenarios saved by --Q3 scenarios
+            with open(save_dir / "scenarios.pkl", "rb") as f:
+                S = pickle.load(f)
+
+            # Each member's outside option from Q1 (used for the IR check)
+            bR, bI, _, _ = solve_q1_benchmarks(com)
+
+            # Test the prices on the scenarios
+            summaries = {}
+            for name in ["in5", "in10"]:
+                scen = S[name]
+                print(f"\nEvaluating {name} ({len(scen)} scenarios)")
+                df = evaluate_prices(com, x_ev, scen, bR, bI)
+                df.to_csv(save_dir / f"ev_eval_{name}.csv", index=False)
+                summaries[name] = summarize(df)
+                print(summaries[name])
+
+            pd.DataFrame(summaries).T.to_csv(save_dir / "ev_eval_summary.csv")
+            print(f"\nSaved to {save_dir}")
 
    
     # The model constructors and execution calls will go here
