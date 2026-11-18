@@ -105,6 +105,7 @@ def build_stochastic_pricing_problem(
     price_lower=None,
     price_upper=None,
     end_E_bat_rule: str = 'final',
+    chance_epsilon=None,
 ):
     """Build the stochastic pricing MILP SDP (one price vector, one KKT system per member and scenario).
 
@@ -150,6 +151,8 @@ def build_stochastic_pricing_problem(
         raise ValueError('cvar_weight must be in [0, 1]')
     if not 0.0 < cvar_alpha <= 1.0:
         raise ValueError('cvar_alpha must be in (0, 1]')
+    if chance_epsilon is not None and not 0.0 <= chance_epsilon <= 1.0:
+        raise ValueError('chance_epsilon must be in [0, 1] or None')
     if end_E_bat_rule not in {'final', 'initial', 'none'}:
         raise ValueError("end_E_bat_rule must be 'final', 'initial' or 'none'")
 
@@ -375,6 +378,31 @@ def build_stochastic_pricing_problem(
         cost_s.append(g_cost + m_cost)                           # C_s, same as Q2's community cost
         budget_s.append(gp.quicksum(Pi[i] for i in IDs) - g_cost)   # B_s = payments - grid cost
 
+    # ---- joint chance constraint on DSO capacity ----
+    z_cc = None
+
+    if chance_epsilon is not None:
+
+        # Binary variable: 1 allows a cap violation in scenario s
+        z_cc = model.addVars(S, vtype=GRB.BINARY,
+                            name='cap_violation_allowed')
+
+        # Enforce the cap in every hour unless z_cc[s] = 1
+        for s in range(S):
+            for t in hours:
+                model.addGenConstrIndicator(
+                    z_cc[s], 0,
+                    P_imp[s][t] <= float(cap[t]),
+                    name=f'cc_cap_s{s}_t{t}'
+                )
+
+        # Limit the probability of violating the cap
+        model.addConstr(
+            gp.quicksum(pi[s] * z_cc[s] for s in range(S))
+            <= chance_epsilon,
+            name='joint_capacity_chance_constraint'
+        )
+
     # ---- requirements in expectation ----
     ir_slack = {}
     if requirements in {'BB', 'BBIR'}:
@@ -412,7 +440,8 @@ def build_stochastic_pricing_problem(
                      member_cost=member_cost_s, cost=cost_s, budget=budget_s,
                      expected_cost=expected_cost, zeta=zeta, eta=eta,
                      ir_slack=ir_slack, follower=follower_s,
-                     cvar_weight=cvar_weight, cvar_alpha=cvar_alpha)
+                     cvar_weight=cvar_weight, cvar_alpha=cvar_alpha,
+                     chance_epsilon=chance_epsilon, z_cc=z_cc)
     return model, variables
 
 
