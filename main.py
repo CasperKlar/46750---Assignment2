@@ -547,6 +547,7 @@ def main() -> None:
                      )
     ap.add_argument("--N", type=int, default=5, choices=[5, 10], help="number of in-sample scenarios")
     ap.add_argument("--req", choices=["none", "BB", "BBIR"], default="none", help="requirements in expectation")
+    ap.add_argument("--epsilon", type=float, default=0.1, help="Maximum joint capacity violation probability for sdp_cc")
     args = ap.parse_args()
 
     com = load_community(args.community, day=args.day)
@@ -813,43 +814,88 @@ def main() -> None:
             print("exceedance per scenario [kWh]:", np.round(r["exceedance_s"], 3))
             print("prices:", np.round(r["prices"], 3))
         else:
-            print("No feasible solution. Gurobi status:", model.Status)
+            print("No feasible solution. Gurobi status:", model.Status)    
 
-    
     if args.Q3 == "sdp_cc":
-    
-            print(f"\n--- Q3 step 2: SDP (req={args.req} ---")
-            save_dir = RESULTS_DIR / "Q3" / args.community / args.day
-            with open(save_dir / "scenarios.pkl", "rb") as f:
-                S = pickle.load(f)
-            scen = S[f"in{args.N}"]
-    
-            bR, bI, _, _ = solve_q1_benchmarks(com)          # outside options (theta = 1)
-    
-            model, v = build_stochastic_pricing_problem(
-                com, scen, requirements='none',
-                benchmark_R=bR, benchmark_I=bI, chance_epsilon=0.1)
-            model.Params.TimeLimit = 600
-            model.Params.MIPGap = 1e-2
-            model.Params.LogFile = str(save_dir / f"Q3_N{args.N}_sdp_cc.log")
-            model.optimize()
-    
-            if model.SolCount > 0:
-                r = extract_stochastic_result(model, v)
-                tag = f"Q3_N{args.N}_sdp_cc"
-                pd.DataFrame({"hour": range(24), "price_DKK_per_kWh": r["prices"]}).to_csv(
-                    save_dir / f"sdp_prices_{tag}.csv", index=False)
-                pd.DataFrame({"scenario": range(len(scen)), "cost": r["cost_s"], "budget": r["budget_s"],
-                              "cap_exceedance_kWh": r["exceedance_s"]}).to_csv(
-                    save_dir / f"sdp_scenarios_{tag}.csv", index=False)
-                print(f"status {model.Status}, gap {model.MIPGap:.4%}, runtime {model.Runtime:.1f}s")
-                print(f"in-sample E[C] {r['expected_cost']:.2f}, CVaR {r['cvar_cost']:.2f} DKK")
-                print("cost per scenario:", np.round(r["cost_s"], 2))
-                print("budget per scenario:", np.round(r["budget_s"], 3))
-                print("exceedance per scenario [kWh]:", np.round(r["exceedance_s"], 3))
-                print("prices:", np.round(r["prices"], 3))
-            else:
-                print("No feasible solution. Gurobi status:", model.Status)
+
+        epsilon = 0.1
+        requirements = "none"
+
+        print(f"\n--- Q3: Chance-constrained SDP (N={args.N}, epsilon={epsilon}, req={requirements}) ---")
+
+        save_dir = RESULTS_DIR / "Q3" / args.community / args.day
+
+        with open(save_dir / "scenarios.pkl", "rb") as f:
+            S = pickle.load(f)
+
+        scen = S[f"in{args.N}"]
+
+        bR, bI, _, _ = solve_q1_benchmarks(com)
+
+        model, v = build_stochastic_pricing_problem(
+            com, scen,
+            requirements=requirements,
+            cvar_weight=0.0,
+            benchmark_R=bR,
+            benchmark_I=bI,
+            chance_epsilon=epsilon
+        )
+
+        model.Params.TimeLimit = 600
+        model.Params.MIPGap = 1e-2
+        model.Params.LogFile = str(save_dir / f"Q3_N{args.N}_sdp_cc.log")
+        model.optimize()
+
+        if model.SolCount > 0:
+
+            r = extract_stochastic_result(model, v)
+
+            # Check actual capacity violations across all hours
+            cap = np.asarray(com.contract.capacity_limit_kW)
+            violations = (r["import_s"] > cap + 1e-5).any(axis=1)
+
+            violation_probability = sum(
+                v["pi"][s] * violations[s]
+                for s in range(len(scen))
+            )
+
+            # Save results
+            tag = f"Q3_N{args.N}_sdp_cc"
+
+            pd.DataFrame({
+                "hour": range(len(r["prices"])),
+                "price_DKK_per_kWh": r["prices"]
+            }).to_csv(save_dir / f"sdp_prices_{tag}.csv", index=False)
+
+            pd.DataFrame({
+                "scenario": range(len(scen)),
+                "cost_DKK": r["cost_s"],
+                "budget_DKK": r["budget_s"],
+                "cap_exceedance_kWh": r["exceedance_s"],
+                "capacity_violated": violations
+            }).to_csv(save_dir / f"sdp_scenarios_{tag}.csv", index=False)
+
+            # Print results
+            print(f"\n--- Chance-constrained SDP results ---")
+            print(f"Solver status: {model.Status}")
+            print(f"MIP gap: {model.MIPGap:.4%}")
+            print(f"Runtime: {model.Runtime:.1f} s")
+
+            print(f"\nExpected community cost: {r['expected_cost']:.2f} DKK")
+            print(f"Target violation probability: {epsilon:.1%}")
+            print(f"Actual in-sample violation probability: {violation_probability:.1%}")
+            print(f"Expected cap exceedance: {np.dot(v['pi'], r['exceedance_s']):.3f} kWh")
+            print(f"Expected budget residual: {np.dot(v['pi'], r['budget_s']):.3f} DKK")
+
+            print("\nCost per scenario [DKK]:", np.round(r["cost_s"], 2))
+            print("Budget per scenario [DKK]:", np.round(r["budget_s"], 3))
+            print("Cap exceedance per scenario [kWh]:", np.round(r["exceedance_s"], 3))
+            print("Capacity violated per scenario:", violations)
+            print("Optimized prices [DKK/kWh]:", np.round(r["prices"], 3))
+
+        else:
+            print(f"No feasible solution found. Gurobi status: {model.Status}")
+
    
     # The model constructors and execution calls will go here
     # once their interfaces are implemented.
