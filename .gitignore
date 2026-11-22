@@ -1,6 +1,7 @@
 # Virtual environment
 .venv/
 venv/
+optimization/
 
 # Python cache
 __pycache__/
@@ -21,3 +22,6 @@ __pycache__/
 # results
 /results/*
 !/results/.gitkeep
+
+# macOS
+.DS_Store
