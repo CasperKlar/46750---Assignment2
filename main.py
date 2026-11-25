@@ -878,39 +878,38 @@ def main() -> None:
         q2_x = pd.read_csv(RESULTS_DIR / args.community / args.day / "Q2" / "DPBB" / "hourly_results.csv")["price_DKK_per_kWh"].to_numpy()
         warm_start(com, scen, model, q2_x)
 
-        # DIAGNOSTIC START
         model.update()
         diagnostic = model.copy()
 
-        for var in diagnostic.getVars():
-            if var.Start != GRB.UNDEFINED:
-                var.LB = var.Start
-                var.UB = var.Start
+        # Fix variables to their supplied start values
+        for v in diagnostic.getVars():
+            if v.Start != GRB.UNDEFINED:
+                v.LB = v.Start
+                v.UB = v.Start
 
-        diagnostic.setObjective(0.0)
-        diagnostic.Params.OutputFlag = 1
+        diagnostic.Params.OutputFlag = 0
         diagnostic.optimize()
 
         if diagnostic.Status == GRB.INFEASIBLE:
-            print("MIP start is infeasible!")
             diagnostic.computeIIS()
 
+            print("\nConstraints in IIS:")
             for c in diagnostic.getConstrs():
                 if c.IISConstr:
-                    print("Conflict:", c.ConstrName)
+                    print(c.ConstrName)
 
+            print("\nGeneral constraints in IIS:")
             for c in diagnostic.getGenConstrs():
                 if c.IISGenConstr:
-                    print("General constraint conflict:", c.GenConstrName)
+                    print(c.GenConstrName)
 
         elif diagnostic.Status == GRB.OPTIMAL:
-            print("MIP start is feasible!")
+            print("The supplied start values are feasible.")
 
         else:
-            print("Diagnostic inconclusive:", diagnostic.Status)
-
-        # DIAGNOSTIC END
-
+            print("Diagnostic inconclusive. Status:", diagnostic.Status)
+        
+        #model.update()
         model.Params.MIPFocus = 1
         model.optimize()
 
