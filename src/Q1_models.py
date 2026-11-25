@@ -120,8 +120,9 @@ class ModelR:
         self.con["soc_max"] = m.addConstrs((E_bat[i,t] <= c.members[i].battery_capacity_kWh for i in battery_members for t in range(n_hours + 1)), name="soc_max")
         self.con["charge_limit"] = m.addConstrs((s_ch[i,t] <= c.members[i].battery_max_charge_kW for i in battery_members for t in T),name="charge_limit")
         self.con["discharge_limit"] = m.addConstrs((s_dis[i,t] <= c.members[i].battery_max_discharge_kW for i in battery_members for t in T),name="discharge_limit")
+        # Terminal SOC: battery must finish with at least its initial energy can be used in order to achieve the reference model (first line after this comment)
+        #self.con["soc_final"] = m.addConstrs((E_bat[i, n_hours] >= c.members[i].battery_initial_soc_kWh for i in battery_members),name="soc_final")
         self.con["soc_final"] = m.addConstrs((E_bat[i, n_hours] >= (c.members[i].battery_final_soc_kWh if c.members[i].battery_final_soc_kWh is not None else END_OF_DAY_CHARGE) for i in battery_members),name="soc_final")
-        
         return self
         
     def solve(self):
