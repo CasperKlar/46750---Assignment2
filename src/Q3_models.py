@@ -383,25 +383,30 @@ def build_stochastic_pricing_problem(
 
     if chance_epsilon is not None:
 
-        # Binary variable: 1 allows a cap violation in scenario s
-        z_cc = model.addVars(S, vtype=GRB.BINARY,
-                            name='cap_violation_allowed')
+        z_cc = model.addVars(S, vtype=GRB.BINARY, name='cap_violation_allowed')
 
-        # Enforce the cap in every hour unless z_cc[s] = 1
+        # M[s][t]: largest import the community can reach in scenario s, hour t, minus the cap
+        def max_import(com_s, t):
+            total = 0.0
+            for mem in com_s.members:
+                total += float(mem.load_upper_kWh[t])
+                if mem.has_battery:
+                    total += min(float(mem.battery_max_charge_kW),
+                                 float(mem.battery_capacity_kWh) / float(mem.battery_charging_efficiency))
+            return total
+
+        M = [[max(0.0, max_import(comms[s], t) - float(cap[t])) for t in hours]
+             for s in range(S)]
+
         for s in range(S):
-            for t in hours:
-                model.addGenConstrIndicator(
-                    z_cc[s], 0,
-                    P_imp[s][t] <= float(cap[t]),
-                    name=f'cc_cap_s{s}_t{t}'
-                )
 
-        # Limit the probability of violating the cap
-        model.addConstr(
-            gp.quicksum(pi[s] * z_cc[s] for s in range(S))
-            <= chance_epsilon,
-            name='joint_capacity_chance_constraint'
-        )
+            # Enforce cap in every hour (if z=0, then the constraint becomes the plain cap)
+            for t in hours:
+                model.addConstr(P_imp[s][t] <= float(cap[t]) + M[s][t] * z_cc[s],
+                                name=f'cc_cap_s{s}_t{t}')
+
+        model.addConstr(gp.quicksum(pi[s] * z_cc[s] for s in range(S)) <= chance_epsilon,
+                        name='joint_capacity_chance_constraint')
 
     # ---- requirements in expectation ----
     ir_slack = {}
