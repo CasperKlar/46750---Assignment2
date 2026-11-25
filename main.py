@@ -877,6 +877,40 @@ def main() -> None:
         model.Params.LogFile = str(save_dir / f"Q3_N{args.N}_cc_{requirements}_eps{epsilon}.log")
         q2_x = pd.read_csv(RESULTS_DIR / args.community / args.day / "Q2" / "DPBB" / "hourly_results.csv")["price_DKK_per_kWh"].to_numpy()
         warm_start(com, scen, model, q2_x)
+
+        # DIAGNOSTIC START
+        model.update()
+        diagnostic = model.copy()
+
+        for var in diagnostic.getVars():
+            if var.Start != GRB.UNDEFINED:
+                var.LB = var.Start
+                var.UB = var.Start
+
+        diagnostic.setObjective(0.0)
+        diagnostic.Params.OutputFlag = 1
+        diagnostic.optimize()
+
+        if diagnostic.Status == GRB.INFEASIBLE:
+            print("MIP start is infeasible!")
+            diagnostic.computeIIS()
+
+            for c in diagnostic.getConstrs():
+                if c.IISConstr:
+                    print("Conflict:", c.ConstrName)
+
+            for c in diagnostic.getGenConstrs():
+                if c.IISGenConstr:
+                    print("General constraint conflict:", c.GenConstrName)
+
+        elif diagnostic.Status == GRB.OPTIMAL:
+            print("MIP start is feasible!")
+
+        else:
+            print("Diagnostic inconclusive:", diagnostic.Status)
+
+        # DIAGNOSTIC END
+
         model.Params.MIPFocus = 1
         model.optimize()
 
