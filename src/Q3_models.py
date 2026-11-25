@@ -411,8 +411,12 @@ def build_stochastic_pricing_problem(
     # ---- requirements in expectation ----
     ir_slack = {}
     if requirements in {'BB', 'BBIR'}:
-        model.addConstr(gp.quicksum(pi[s] * budget_s[s] for s in range(S)) == 0,
-                        name='budget_balance_in_expectation')
+        expected_budget = gp.quicksum(pi[s] * budget_s[s] for s in range(S))
+
+        model.addConstr(expected_budget >= 0, name='budget_balance_lower_bound')
+
+        model.addConstr(expected_budget <= 1.4 - 1e-6,name='budget_balance_upper_bound')
+
     if requirements == 'BBIR':
         for i in IDs:
             limit = min(float(benchmark_R[i]), float(benchmark_I[i]))
