@@ -539,17 +539,14 @@ def main() -> None:
     ap.add_argument("--ir-mode",choices=["hard", "lexicographic"],default="hard",help="Individual-rationality treatment for DPBBIR")
     ap.add_argument("--Q2-all",action="store_true",help="Run all Q2 variants and compare results")
     ap.add_argument("--Q2-sensitivity",action="store_true",help="Run the Q2 contract-parameter sensitivity study") 
-    ap.add_argument("--Q3", choices=["scenarios", "evaluate_ev", "sdp_cvar", "sdp_cc"],
-                help="Question 3 step: 'scenarios' = generate and check scenarios; "
-                     "'evaluate_ev' = evaluate the Q2 prices on the scenario sets; "
-                     "'sdp_cvar' = evaluate the stochastic models "
-                     "'sdp_cc' = evaluate the stochastic models "
-                     )
+    ap.add_argument("--Q3", choices=["scenarios", "evaluate_ev", "sdp_rn", "sdp_cvar", "sdp_cc", "validate", "oos"],
+                help="Question 3 step")
     ap.add_argument("--N", type=int, default=5, choices=[5, 10], help="number of in-sample scenarios")
-    ap.add_argument("--req", choices=["none", "BB", "BBIR"], default="none", help="requirements in expectation")
-    ap.add_argument("--epsilon", type=float, default=0.1, help="Maximum joint capacity violation probability for sdp_cc")
-    args = ap.parse_args()
+    ap.add_argument("--req", choices=["none", "BB", "BBIR"], default="BB", help="requirements in expectation")
+    ap.add_argument("--epsilon", type=float, default=0.2, help="share of scenarios allowed to exceed the cap (sdp_cc)")
+    ap.add_argument("--tag", default=None, help="name of the price file to test on the 100 unseen scenarios (or DP0)")
 
+    args = ap.parse_args()
     com = load_community(args.community, day=args.day)
     print(com.summary(), "\n")
     
@@ -779,47 +776,55 @@ def main() -> None:
 
             pd.DataFrame(summaries).T.to_csv(save_dir / "ev_eval_summary.csv")
             print(f"\nSaved to {save_dir}")
-    
-    if args.Q3 == "sdp_cvar":
 
-        print(f"\n--- Q3 step 2: SDP (req={args.req} ---")
+    if args.Q3 in ("sdp_rn", "sdp_cvar"):
+        w = 0.0 if args.Q3 == "sdp_rn" else CVAR_WEIGHT      # w = 0 means the basic model
+        print(f"\n--- Q3: {args.Q3} (N={args.N}, req={args.req}, w={w}) ---")
         save_dir = RESULTS_DIR / "Q3" / args.community / args.day
         with open(save_dir / "scenarios.pkl", "rb") as f:
             S = pickle.load(f)
         scen = S[f"in{args.N}"]
 
-        bR, bI, _, _ = solve_q1_benchmarks(com)          # outside options (theta = 1)
+        bR, bI, _, _ = solve_q1_benchmarks(com)
 
         model, v = build_stochastic_pricing_problem(
-            com, scen, requirements="none",
-            cvar_weight=CVAR_WEIGHT, cvar_alpha=CVAR_ALPHA,
+            com, scen, requirements=args.req,
+            cvar_weight=w, cvar_alpha=CVAR_ALPHA,
             benchmark_R=bR, benchmark_I=bI, chance_epsilon=None)
+
+        if args.Q3 == "sdp_rn":
+            tag = f"Q3_N{args.N}_rn_{args.req}"
+        else:
+            tag = f"Q3_N{args.N}_cvar_{args.req}_w{w}_a{CVAR_ALPHA}"
+
         model.Params.TimeLimit = 600
         model.Params.MIPGap = 1e-2
-        model.Params.LogFile = str(save_dir / f"sdp_N{args.N}_{args.req}_w{CVAR_WEIGHT}.log")
+        model.Params.LogFile = str(save_dir / f"{tag}.log")
         model.optimize()
 
         if model.SolCount > 0:
             r = extract_stochastic_result(model, v)
-            tag = f"Q3_N{args.N}_w{CVAR_WEIGHT}_a{CVAR_ALPHA}"
             pd.DataFrame({"hour": range(24), "price_DKK_per_kWh": r["prices"]}).to_csv(
                 save_dir / f"sdp_prices_{tag}.csv", index=False)
             pd.DataFrame({"scenario": range(len(scen)), "cost": r["cost_s"], "budget": r["budget_s"],
                           "cap_exceedance_kWh": r["exceedance_s"]}).to_csv(
                 save_dir / f"sdp_scenarios_{tag}.csv", index=False)
             print(f"status {model.Status}, gap {model.MIPGap:.4%}, runtime {model.Runtime:.1f}s")
+            print("binaries", model.NumBinVars, "| variables", model.NumVars, "| constraints", model.NumConstrs)
             print(f"in-sample E[C] {r['expected_cost']:.2f}, CVaR {r['cvar_cost']:.2f} DKK")
+            print(f"expected budget residual {np.dot(v['pi'], r['budget_s']):.4f} DKK")
             print("cost per scenario:", np.round(r["cost_s"], 2))
             print("budget per scenario:", np.round(r["budget_s"], 3))
             print("exceedance per scenario [kWh]:", np.round(r["exceedance_s"], 3))
             print("prices:", np.round(r["prices"], 3))
+            print("tag for the oos step:", tag)
         else:
-            print("No feasible solution. Gurobi status:", model.Status)    
+            print("No feasible solution. Gurobi status:", model.Status)  
 
     if args.Q3 == "sdp_cc":
 
-        epsilon = 0.1
-        requirements = "none"
+        epsilon = args.epsilon
+        requirements = args.req
 
         print(f"\n--- Q3: Chance-constrained SDP (N={args.N}, epsilon={epsilon}, req={requirements}) ---")
 
@@ -843,7 +848,7 @@ def main() -> None:
 
         model.Params.TimeLimit = 600
         model.Params.MIPGap = 1e-2
-        model.Params.LogFile = str(save_dir / f"Q3_N{args.N}_sdp_cc.log")
+        model.Params.LogFile = str(save_dir / f"Q3_N{args.N}_cc_{requirements}_eps{epsilon}.log")
         model.optimize()
 
         if model.SolCount > 0:
@@ -860,7 +865,7 @@ def main() -> None:
             )
 
             # Save results
-            tag = f"Q3_N{args.N}_sdp_cc"
+            tag = f"Q3_N{args.N}_cc_{requirements}_eps{epsilon}"
 
             pd.DataFrame({
                 "hour": range(len(r["prices"])),
@@ -880,6 +885,8 @@ def main() -> None:
             print(f"Solver status: {model.Status}")
             print(f"MIP gap: {model.MIPGap:.4%}")
             print(f"Runtime: {model.Runtime:.1f} s")
+            print("binaries", model.NumBinVars, "| variables", model.NumVars, "| constraints", model.NumConstrs)
+            print("tag for the oos step:", tag)
 
             print(f"\nExpected community cost: {r['expected_cost']:.2f} DKK")
             print(f"Target violation probability: {epsilon:.1%}")
@@ -896,6 +903,37 @@ def main() -> None:
         else:
             print(f"No feasible solution found. Gurobi status: {model.Status}")
 
+    if args.Q3 == "validate":
+        """runs the model with one scenario where nothing is uncertain and compares it with the Q2 model DP^BB."""
+        # one scenario, theta = 1 for every member, probability 1
+        one = [{"id": 0, "probability": 1.0,
+                "members": {m.consumer_id: {m.raw["load"]["load_id"]: m.raw["load"]} for m in com.members}}]
+        bR, bI, _, _ = solve_q1_benchmarks(com)
+        model, v = build_stochastic_pricing_problem(com, one, requirements="BB", benchmark_R=bR, benchmark_I=bI)
+        model.Params.TimeLimit = 300
+        model.Params.MIPGap = 1e-4
+        model.optimize()
+        r = extract_stochastic_result(model, v)
+        q2_dir = RESULTS_DIR / args.community / args.day / "Q2" / "DPBB"
+        q2_prices = pd.read_csv(q2_dir / "hourly_results.csv")["price_DKK_per_kWh"].to_numpy()
+        q2 = pd.read_csv(q2_dir / "summary.csv").iloc[0]
+        print("SDP with 1 scenario, cost:", r["expected_cost"], "| gap", model.MIPGap)
+        print("DP^BB from Q2, cost      :", q2["Community cost (DKK)"], "| gap", q2["MIP gap"])
+        print("largest price difference :", np.abs(r["prices"] - q2_prices).max())
+
+    if args.Q3 == "oos":
+        """This tests one saved price vector on the 100 unseen scenarios."""
+        save_dir = RESULTS_DIR / "Q3" / args.community / args.day
+        with open(save_dir / "scenarios.pkl", "rb") as f:
+            S = pickle.load(f)
+        if args.tag in ("DP0", "DPBB"):
+            x = pd.read_csv(RESULTS_DIR / args.community / args.day / "Q2" / args.tag / "hourly_results.csv")["price_DKK_per_kWh"].to_numpy()
+        else:
+            x = pd.read_csv(save_dir / f"sdp_prices_{args.tag}.csv")["price_DKK_per_kWh"].to_numpy()
+        bR, bI, _, _ = solve_q1_benchmarks(com)
+        df = evaluate_prices(com, x, S["out100"], bR, bI)
+        df.to_csv(save_dir / f"oos_{args.tag}.csv", index=False)
+        print(pd.Series(summarize(df)).to_string())
    
     # The model constructors and execution calls will go here
     # once their interfaces are implemented.

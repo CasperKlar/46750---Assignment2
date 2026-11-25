@@ -175,23 +175,17 @@ def summarize(df):
         dict: frequency and magnitude of the three requirement violations.
     """
     return {
-        # budget: residual = payments collected - grid cost (positive = surplus, negative = deficit)
+        "mean community cost [DKK]": df["community_cost"].mean(),
+        "cost 95% quantile [DKK]": df["community_cost"].quantile(0.95),
+        "cost max [DKK]": df["community_cost"].max(),
+        "cost CVaR20 [DKK]": cvar_of(df["community_cost"], np.full(len(df), 1 / len(df)), 0.2),
+        "P(cap exceeded)": (df["cap_exceedance_kWh"] > 1e-6).mean(),
+        "mean cap exceedance [kWh]": df["cap_exceedance_kWh"].mean(),
+        "max cap exceedance [kWh]": df["cap_exceedance_kWh"].max(),
         "mean budget residual [DKK]": df["budget_residual"].mean(),
         "min budget residual [DKK]": df["budget_residual"].min(),
-        "max budget residual [DKK]": df["budget_residual"].max(),
-        "P(budget surplus)": (df["budget_residual"] > 1e-4).mean(),
         "P(budget deficit)": df["budget_violated"].mean(),
-        "mean deficit [DKK]": df["deficit"].mean(),
-        "max deficit [DKK]": df["deficit"].max(),
-        # cap
-        "mean cap exceedance [kWh]": df["cap_exceedance_kWh"].mean(),
-        "mean hours above cap": df["hours_above_cap"].mean(),
-        # individual rationality
-        "P(at least one IR violation)": (df["n_ir_violations"] > 0).mean(),
         "mean members violating IR": df["n_ir_violations"].mean(),
-        "mean total IR violation [DKK]": df["total_ir_violation"].mean(),
-        # cost
-        "mean community cost [DKK]": df["community_cost"].mean(),
     }
 
 
