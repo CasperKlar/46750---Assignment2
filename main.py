@@ -528,6 +528,27 @@ def run_all_q2_scenarios(com, save_dir):
 
     return comparison
 
+def warm_start(com, scen, model, x_vals):
+    """Fix the price to x_vals, solve the (now easy) member responses, and hand that solution to `model` as a start."""
+    m0, v0 = build_stochastic_pricing_problem(com, scen, requirements="none")
+    for t in range(24):
+        v0["x"][t].LB = float(x_vals[t])
+        v0["x"][t].UB = float(x_vals[t])
+    m0.Params.OutputFlag = 0
+    m0.Params.MIPGap = 1e-4
+    m0.Params.TimeLimit = 120
+    m0.optimize()
+    if m0.SolCount == 0:
+        print("warm start: no solution at fixed prices")
+        return
+    vals = {var.VarName: var.X for var in m0.getVars()}
+    n = 0
+    for var in model.getVars():
+        if var.VarName in vals:
+            var.Start = vals[var.VarName]
+            n += 1
+    print(f"warm start set on {n} variables")
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--community", default="base", help=f"base (shipped) or your own params_community_<name>.json; available: {list_communities()}")
@@ -539,7 +560,7 @@ def main() -> None:
     ap.add_argument("--ir-mode",choices=["hard", "lexicographic"],default="hard",help="Individual-rationality treatment for DPBBIR")
     ap.add_argument("--Q2-all",action="store_true",help="Run all Q2 variants and compare results")
     ap.add_argument("--Q2-sensitivity",action="store_true",help="Run the Q2 contract-parameter sensitivity study") 
-    ap.add_argument("--Q3", choices=["scenarios", "evaluate_ev", "sdp_rn", "sdp_cvar", "sdp_cc", "validate", "oos"],
+    ap.add_argument("--Q3", choices=["scenarios", "evaluate_ev", "sdp_rn", "sdp_cvar", "sdp_cc", "validate", "oos", "scale"],
                 help="Question 3 step")
     ap.add_argument("--N", type=int, default=5, choices=[5, 10], help="number of in-sample scenarios")
     ap.add_argument("--req", choices=["none", "BB", "BBIR"], default="BB", help="requirements in expectation")
@@ -755,7 +776,8 @@ def main() -> None:
             save_dir = RESULTS_DIR / "Q3" / args.community / args.day
 
             # The posted prices from Q2, model DP0 (baseline DP)
-            x_ev = pd.read_csv(q2_dir / "DP0" / "hourly_results.csv")["price_DKK_per_kWh"].to_numpy()
+            base_tag = args.tag if args.tag in ("DP0", "DPBB") else "DP0"
+            x_ev = pd.read_csv(q2_dir / base_tag / "hourly_results.csv")["price_DKK_per_kWh"].to_numpy()
 
             # The scenarios saved by --Q3 scenarios
             with open(save_dir / "scenarios.pkl", "rb") as f:
@@ -770,11 +792,11 @@ def main() -> None:
                 scen = S[name]
                 print(f"\nEvaluating {name} ({len(scen)} scenarios)")
                 df = evaluate_prices(com, x_ev, scen, bR, bI)
-                df.to_csv(save_dir / f"ev_eval_{name}.csv", index=False)
+                df.to_csv(save_dir / f"ev_eval_{base_tag}_{name}.csv", index=False)
                 summaries[name] = summarize(df)
                 print(summaries[name])
 
-            pd.DataFrame(summaries).T.to_csv(save_dir / "ev_eval_summary.csv")
+            pd.DataFrame(summaries).T.to_csv(save_dir / f"ev_eval_summary_{base_tag}.csv")
             print(f"\nSaved to {save_dir}")
 
     if args.Q3 in ("sdp_rn", "sdp_cvar"):
@@ -846,7 +868,8 @@ def main() -> None:
             chance_epsilon=epsilon
         )
 
-        model.Params.TimeLimit = 600
+        model.Params.MIPFocus = 1
+        model.Params.TimeLimit = 1800
         model.Params.MIPGap = 1e-2
         model.Params.LogFile = str(save_dir / f"Q3_N{args.N}_cc_{requirements}_eps{epsilon}.log")
         model.optimize()
@@ -934,6 +957,27 @@ def main() -> None:
         df = evaluate_prices(com, x, S["out100"], bR, bI)
         df.to_csv(save_dir / f"oos_{args.tag}.csv", index=False)
         print(pd.Series(summarize(df)).to_string())
+
+    if args.Q3 == "scale":
+        with open(RESULTS_DIR / "Q3" / args.community / args.day / "scenarios.pkl", "rb") as f:
+            S5 = pickle.load(f)["in5"]
+        one = {"id": 0, "probability": 1.0,
+               "members": {m.consumer_id: {m.raw["load"]["load_id"]: m.raw["load"]} for m in com.members}}
+        tests = {
+            "2 copies of theta=1": [one, one],
+            "2 real scenarios": S5[:2],
+            "3 real scenarios": S5[:3],
+        }
+        q2_x = pd.read_csv(RESULTS_DIR / args.community / args.day / "Q2" / "DPBB" / "hourly_results.csv")["price_DKK_per_kWh"].to_numpy()
+        for name, sc in tests.items():
+            sc = [{**s, "probability": 1.0 / len(sc)} for s in sc]
+            m, v = build_stochastic_pricing_problem(com, sc, requirements="none")
+            warm_start(com, sc, m, q2_x)
+            m.Params.TimeLimit = 300
+            m.Params.MIPGap = 1e-2
+            m.optimize()
+            print(f"RESULT {name}: solutions={m.SolCount}, runtime={m.Runtime:.0f}s, "
+                  f"gap={m.MIPGap if m.SolCount else float('nan'):.2%}")
    
     # The model constructors and execution calls will go here
     # once their interfaces are implemented.

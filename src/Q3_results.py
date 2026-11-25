@@ -146,6 +146,15 @@ def evaluate_prices(com, x, scenarios, benchmark_R, benchmark_I, tol=1e-4):
         model.Params.MIPGap = 1e-6       # tight gap, so ties are resolved reliably
         model.optimize()
 
+        if model.SolCount == 0:
+            print(f"scenario {sc['id']}: no solution in 60 s, retrying", flush=True)
+            model.Params.MIPFocus = 1
+            model.Params.TimeLimit = 300
+            model.optimize()
+        if model.SolCount == 0:
+            print(f"scenario {sc['id']}: FAILED, skipped", flush=True)
+            continue
+
         # extract flows, payments and member costs from the solved model
         res = extract_pricing_result(model, v)
         met = community_metrics(res, c)                            # budget, cap exceedance, ...
@@ -162,6 +171,8 @@ def evaluate_prices(com, x, scenarios, benchmark_R, benchmark_I, tol=1e-4):
             "total_ir_violation": ir["total_ir_violation_DKK"],
             "budget_violated": met["budget_residual_DKK"] < -tol,  # deficit beyond round-off
         })
+
+    print(f"evaluated {len(rows)} of {len(scenarios)} scenarios", flush=True)
 
     return pd.DataFrame(rows)
 
