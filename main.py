@@ -542,6 +542,7 @@ def warm_start(com, scen, model, x_vals):
         print("warm start: no solution at fixed prices")
         return
     vals = {var.VarName: var.X for var in m0.getVars()}
+    model.update()
     n = 0
     for var in model.getVars():
         if var.VarName in vals:
@@ -822,6 +823,9 @@ def main() -> None:
         model.Params.TimeLimit = 600
         model.Params.MIPGap = 1e-2
         model.Params.LogFile = str(save_dir / f"{tag}.log")
+        q2_x = pd.read_csv(RESULTS_DIR / args.community / args.day / "Q2" / "DPBB" / "hourly_results.csv")["price_DKK_per_kWh"].to_numpy()
+        warm_start(com, scen, model, q2_x)
+        model.Params.MIPFocus = 1
         model.optimize()
 
         if model.SolCount > 0:
@@ -868,10 +872,12 @@ def main() -> None:
             chance_epsilon=epsilon
         )
 
-        model.Params.MIPFocus = 1
-        model.Params.TimeLimit = 1800
+        model.Params.TimeLimit = 600
         model.Params.MIPGap = 1e-2
         model.Params.LogFile = str(save_dir / f"Q3_N{args.N}_cc_{requirements}_eps{epsilon}.log")
+        q2_x = pd.read_csv(RESULTS_DIR / args.community / args.day / "Q2" / "DPBB" / "hourly_results.csv")["price_DKK_per_kWh"].to_numpy()
+        warm_start(com, scen, model, q2_x)
+        model.Params.MIPFocus = 1
         model.optimize()
 
         if model.SolCount > 0:
